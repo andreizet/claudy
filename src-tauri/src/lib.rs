@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Emitter};
+use base64::Engine;
 
 // ─── Data types ───────────────────────────────────────────────────────────────
 
@@ -300,6 +301,95 @@ fn get_claude_account_info() -> ClaudeAccountInfo {
     }
 }
 
+#[tauri::command]
+fn get_workspace_favicon(workspace_path: String) -> Option<String> {
+    let workspace = PathBuf::from(workspace_path);
+    if !workspace.exists() || !workspace.is_dir() {
+        return None;
+    }
+
+    let candidates = [
+        "favicon.ico",
+        "favicon.png",
+        "favicon.svg",
+        "icon.png",
+        "icon.svg",
+        "public/favicon.ico",
+        "public/favicon.png",
+        "public/favicon.svg",
+        "public/icon.png",
+        "public/icon.svg",
+        "static/favicon.ico",
+        "static/favicon.png",
+        "static/favicon.svg",
+        "src/assets/favicon.ico",
+        "src/assets/favicon.png",
+        "src/assets/favicon.svg",
+        "app/favicon.ico",
+        "app/favicon.png",
+        "apple-touch-icon.png",
+    ];
+
+    for rel in candidates {
+        let p = workspace.join(rel);
+        if p.exists() && p.is_file() {
+            if let Some(data_url) = file_to_data_url(&p) {
+                return Some(data_url);
+            }
+        }
+    }
+
+    for entry in walkdir::WalkDir::new(&workspace)
+        .max_depth(3)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let file_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(v) => v.to_lowercase(),
+            None => continue,
+        };
+        let ext = match path.extension().and_then(|e| e.to_str()) {
+            Some(v) => v.to_lowercase(),
+            None => continue,
+        };
+        if !["ico", "png", "svg", "jpg", "jpeg", "webp"].contains(&ext.as_str()) {
+            continue;
+        }
+        if !(file_name.contains("favicon") || file_name == "icon.png" || file_name == "icon.svg") {
+            continue;
+        }
+        if let Some(data_url) = file_to_data_url(path) {
+            return Some(data_url);
+        }
+    }
+
+    None
+}
+
+fn file_to_data_url(path: &Path) -> Option<String> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() > 2 * 1024 * 1024 {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let ext = path.extension()?.to_str()?.to_lowercase();
+    let mime = match ext.as_str() {
+        "ico" => "image/x-icon",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Some(format!("data:{};base64,{}", mime, encoded))
+}
+
 // ─── Send message ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -397,6 +487,7 @@ pub fn run() {
             scan_existing_sessions,
             get_session_messages,
             get_claude_account_info,
+            get_workspace_favicon,
             send_message
         ])
         .run(tauri::generate_context!())

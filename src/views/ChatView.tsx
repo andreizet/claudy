@@ -11,6 +11,7 @@ interface Props {
   accountInfo: ClaudeAccountInfo | null;
   onBack: () => void;
 }
+const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 
 function shortenPath(fullPath: string): string {
   const home = fullPath.match(/^\/(?:Users|home)\/[^/]+/)?.[0];
@@ -55,6 +56,7 @@ export default function ChatView({ workspace, accountInfo, onBack }: Props) {
   const [effort, setEffort] = useState("default");
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState("");
+  const [projectIcon, setProjectIcon] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const loadMessages = (filePath: string) => {
@@ -80,6 +82,47 @@ export default function ChatView({ workspace, accountInfo, onBack }: Props) {
         setLoadingSessionId((current) => (current === sessionId ? null : current));
       });
   }, [activeSession?.file_path]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const key = workspace.encoded_name;
+    try {
+      const raw = window.localStorage.getItem(FAVICON_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, string | null>;
+        if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+          setProjectIcon(parsed[key] ?? null);
+          return;
+        }
+      }
+    } catch {
+      // Ignore malformed cache values.
+    }
+
+    invoke<string | null>("get_workspace_favicon", {
+      workspacePath: workspace.decoded_path,
+    })
+      .then((icon) => {
+        if (cancelled) return;
+        const value = icon ?? null;
+        setProjectIcon(value);
+        try {
+          const raw = window.localStorage.getItem(FAVICON_STORAGE_KEY);
+          const parsed = raw ? (JSON.parse(raw) as Record<string, string | null>) : {};
+          parsed[key] = value;
+          window.localStorage.setItem(FAVICON_STORAGE_KEY, JSON.stringify(parsed));
+        } catch {
+          // Ignore storage errors.
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setProjectIcon(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace.encoded_name, workspace.decoded_path]);
 
   // Stream listener
   useEffect(() => {
@@ -177,7 +220,22 @@ export default function ChatView({ workspace, accountInfo, onBack }: Props) {
         {/* Project name */}
         <Box px={14} pb={12}>
           <Group gap={8} align="center">
-            <FolderIcon />
+            {projectIcon ? (
+              <Box
+                component="img"
+                src={projectIcon}
+                alt={`${workspace.display_name} icon`}
+                style={{
+                  width: 14,
+                  height: 14,
+                  objectFit: "contain",
+                  borderRadius: 3,
+                  flexShrink: 0,
+                }}
+              />
+            ) : (
+              <FolderIcon />
+            )}
             <Text size="sm" fw={600} c="#e4e4e7" truncate style={{ flex: 1, minWidth: 0 }}>
               {workspace.display_name}
             </Text>

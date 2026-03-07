@@ -4,6 +4,7 @@ import { DiscoveredWorkspace } from "../types";
 
 interface Props {
   workspace: DiscoveredWorkspace;
+  faviconDataUrl: string | null;
   isFavorite: boolean;
   onToggleFavorite: () => void;
   onClick?: () => void;
@@ -53,7 +54,7 @@ function relativeTime(secs: string): string {
   return "just now";
 }
 
-export default function ProjectListItem({ workspace, isFavorite, onToggleFavorite, onClick }: Props) {
+export default function ProjectListItem({ workspace, faviconDataUrl, isFavorite, onToggleFavorite, onClick }: Props) {
   const [hovered, setHovered] = useState(false);
   const isMissing = !workspace.path_exists;
   const color = colorFor(workspace.display_name);
@@ -71,7 +72,7 @@ export default function ProjectListItem({ workspace, isFavorite, onToggleFavorit
         display: "flex",
         alignItems: "center",
         gap: 14,
-        padding: "10px 20px",
+        padding: "0 20px",
         cursor: isMissing ? "default" : "pointer",
         background: hovered && !isMissing ? "#18181b" : "transparent",
         opacity: isMissing ? 0.4 : 1,
@@ -97,7 +98,21 @@ export default function ProjectListItem({ workspace, isFavorite, onToggleFavorit
           fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
         }}
       >
-        {abbr}
+        {faviconDataUrl ? (
+          <Box
+            component="img"
+            src={faviconDataUrl}
+            alt={`${workspace.display_name} favicon`}
+            style={{
+              width: "70%",
+              height: "70%",
+              objectFit: "contain",
+              borderRadius: 6,
+            }}
+          />
+        ) : (
+          abbr
+        )}
       </Box>
 
       {/* Info */}

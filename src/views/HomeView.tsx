@@ -4,9 +4,11 @@ import { ClaudeAccountInfo, DiscoveredWorkspace } from "../types";
 import ProjectListItem from "../components/ProjectListItem";
 import sidebarTitle from "../assets/sidebar-title.svg";
 import { md5 } from "../shared/md5";
+import { invoke } from "@tauri-apps/api/core";
 
 type NavItem = "projects" | "favorites";
 const FAVORITES_STORAGE_KEY = "claudy.favoriteWorkspaces";
+const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 
 interface Props {
   workspaces: DiscoveredWorkspace[];
@@ -19,6 +21,7 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
   const [activeNav, setActiveNav] = useState<NavItem>("projects");
   const [search, setSearch] = useState("");
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [favicons, setFavicons] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
     try {
@@ -36,6 +39,58 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
   useEffect(() => {
     window.localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(Array.from(favorites)));
   }, [favorites]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(FAVICON_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      const entries = Object.entries(parsed)
+        .filter(([k, v]) => typeof k === "string" && (typeof v === "string" || v === null));
+      setFavicons(Object.fromEntries(entries) as Record<string, string | null>);
+    } catch {
+      // Ignore malformed cache values.
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(FAVICON_STORAGE_KEY, JSON.stringify(favicons));
+  }, [favicons]);
+
+  useEffect(() => {
+    const missing = workspaces.filter((w) => favicons[w.encoded_name] === undefined);
+    if (missing.length === 0) return;
+    let cancelled = false;
+
+    Promise.all(
+      missing.map(async (w) => {
+        try {
+          const icon = await invoke<string | null>("get_workspace_favicon", {
+            workspacePath: w.decoded_path,
+          });
+          return { key: w.encoded_name, icon: icon ?? null };
+        } catch {
+          return { key: w.encoded_name, icon: null };
+        }
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      setFavicons((prev) => {
+        const next = { ...prev };
+        for (const { key, icon } of results) {
+          if (next[key] === undefined) {
+            next[key] = icon;
+          }
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaces, favicons]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
@@ -205,6 +260,7 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
                 <ProjectListItem
                   key={w.encoded_name}
                   workspace={w}
+                  faviconDataUrl={favicons[w.encoded_name] ?? null}
                   isFavorite={favorites.has(w.encoded_name)}
                   onToggleFavorite={() =>
                     setFavorites((prev) => {
