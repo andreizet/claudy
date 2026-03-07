@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
 
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/
+
 # Build output
 dist/
 out/
