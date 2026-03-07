@@ -41,3 +41,12 @@ Thumbs.db
 .cache/
 .eslintcache
 .parcel-cache/
+
+# Claude Code
+.claude/
+.claude.json
+
+# Codex
+.codex/
+.codex.json
+.codex.local.*

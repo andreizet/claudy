@@ -8,6 +8,7 @@ import { theme } from "./theme";
 
 import "@mantine/core/styles.css";
 import "@mantine/notifications/styles.css";
+import "./global.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {

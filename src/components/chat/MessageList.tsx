@@ -41,15 +41,48 @@ SyntaxHighlighter.registerLanguage("markdown", markdown);
 
 interface Props {
   messages: JsonlRecord[];
+  streamText?: string;
+  sessionId?: string | null;
+  userAvatarUrl?: string;
 }
 
-export default function MessageList({ messages }: Props) {
+export default function MessageList({ messages, streamText, sessionId, userAvatarUrl }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const [atTop, setAtTop] = useState(true);
+  const [atBottom, setAtBottom] = useState(true);
+
+  const refreshScrollState = () => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    const top = el.scrollTop;
+    setAtTop(top <= 1);
+    setAtBottom(maxTop - top <= 1);
+  };
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: "auto" });
+      refreshScrollState();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [sessionId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const frame = requestAnimationFrame(refreshScrollState);
+    return () => cancelAnimationFrame(frame);
   }, [messages.length]);
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const onScroll = () => refreshScrollState();
+    refreshScrollState();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [sessionId]);
 
   // Build a map of tool_use_id → result for expanding tool cards
   const toolResults = new Map<string, { content: string; isError: boolean }>();
@@ -81,8 +114,17 @@ export default function MessageList({ messages }: Props) {
     <ScrollArea h="100%" viewportRef={viewportRef}>
       <Box style={{ padding: "24px 32px", display: "flex", flexDirection: "column", gap: 4 }}>
         {messages.map((record, i) => (
-          <MessageItem key={i} record={record} toolResults={toolResults} />
+          <MessageItem key={i} record={record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />
         ))}
+        {streamText && (
+          <Box style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+            <AssistantText text={streamText} />
+            <Box style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <Box style={{ width: 6, height: 6, borderRadius: "50%", background: "#3f3f46", animation: "pulse 1s infinite" }} />
+              <Text size="xs" c="#3f3f46">Generating…</Text>
+            </Box>
+          </Box>
+        )}
         <div ref={bottomRef} />
       </Box>
     </ScrollArea>
@@ -91,6 +133,8 @@ export default function MessageList({ messages }: Props) {
     <ScrollNav
       onTop={() => viewportRef.current?.scrollTo({ top: 0, behavior: "smooth" })}
       onBottom={() => viewportRef.current?.scrollTo({ top: viewportRef.current.scrollHeight, behavior: "smooth" })}
+      disableTop={atTop}
+      disableBottom={atBottom}
     />
     </Box>
   );
@@ -98,7 +142,15 @@ export default function MessageList({ messages }: Props) {
 
 // ── Individual message ────────────────────────────────────────────────────────
 
-function MessageItem({ record, toolResults }: { record: JsonlRecord; toolResults: Map<string, { content: string; isError: boolean }> }) {
+function MessageItem({
+  record,
+  toolResults,
+  userAvatarUrl,
+}: {
+  record: JsonlRecord;
+  toolResults: Map<string, { content: string; isError: boolean }>;
+  userAvatarUrl?: string;
+}) {
   if (record.type === "summary") {
     return <SummaryDivider />;
   }
@@ -113,7 +165,7 @@ function MessageItem({ record, toolResults }: { record: JsonlRecord; toolResults
   if (isUser) {
     const text = typeof content === "string" ? content : extractUserText(content);
     if (!text.trim()) return null;
-    return <UserBubble text={text} />;
+    return <UserBubble text={text} avatarUrl={userAvatarUrl} />;
   }
 
   // Assistant message — render each content block
@@ -135,7 +187,7 @@ function extractTag(text: string, tag: string): string | null {
   return m ? m[1].trim() : null;
 }
 
-function UserBubble({ text }: { text: string }) {
+function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
   // hide caveat messages
   if (extractTag(text, "local-command-caveat") !== null) return null;
 
@@ -205,10 +257,12 @@ function UserBubble({ text }: { text: string }) {
         {text}
       </Box>
       <Box style={{ width: 28, height: 28, borderRadius: "50%", background: "#27272a", border: "1px solid #3f3f46", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "#71717a" }}>
-          <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-          <circle cx="12" cy="7" r="4" stroke="currentColor" strokeWidth="2" />
-        </svg>
+        <Box
+          component="img"
+          src={avatarUrl || "https://www.gravatar.com/avatar/?s=80&d=mp"}
+          alt="User avatar"
+          style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }}
+        />
       </Box>
     </Box>
   );
@@ -629,7 +683,17 @@ function SummaryDivider() {
 
 // ── Scroll nav buttons ────────────────────────────────────────────────────────
 
-function ScrollNav({ onTop, onBottom }: { onTop: () => void; onBottom: () => void }) {
+function ScrollNav({
+  onTop,
+  onBottom,
+  disableTop,
+  disableBottom,
+}: {
+  onTop: () => void;
+  onBottom: () => void;
+  disableTop: boolean;
+  disableBottom: boolean;
+}) {
   const [hovered, setHovered] = useState(false);
   return (
     <Box
@@ -647,11 +711,15 @@ function ScrollNav({ onTop, onBottom }: { onTop: () => void; onBottom: () => voi
         zIndex: 10,
       }}
     >
-      {[{ label: "Top", onClick: onTop, path: "M18 15l-6-6-6 6" }, { label: "Bottom", onClick: onBottom, path: "M6 9l6 6 6-6" }].map(({ label, onClick, path }) => (
+      {[
+        { label: "Top", onClick: onTop, path: "M18 15l-6-6-6 6", disabled: disableTop },
+        { label: "Bottom", onClick: onBottom, path: "M6 9l6 6 6-6", disabled: disableBottom },
+      ].map(({ label, onClick, path, disabled }) => (
         <Box
           key={label}
           component="button"
           onClick={onClick}
+          disabled={disabled}
           title={`Scroll to ${label}`}
           style={{
             width: 32,
@@ -663,8 +731,9 @@ function ScrollNav({ onTop, onBottom }: { onTop: () => void; onBottom: () => voi
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            cursor: "pointer",
-            color: "#a1a1aa",
+            cursor: disabled ? "not-allowed" : "pointer",
+            color: disabled ? "#52525b" : "#a1a1aa",
+            opacity: disabled ? 0.45 : 1,
             padding: 0,
           }}
         >

@@ -13,6 +13,13 @@ export interface DiscoveredWorkspace {
   sessions: DiscoveredSession[];
 }
 
+export interface ClaudeAccountInfo {
+  email: string | null;
+  display_name: string | null;
+  organization_name: string | null;
+  organization_role: string | null;
+}
+
 // ─── JSONL message types ──────────────────────────────────────────────────────
 
 export interface ContentBlockText {

@@ -1,0 +1,38 @@
+:root {
+  --scrollbar-thumb: #FFE100;
+  --scrollbar-track: #16161b;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+  border: 2px solid var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
+}
+
+/* Mantine ScrollArea custom scrollbar */
+[data-mantine-scrollbar] {
+  background-color: transparent !important;
+}
+
+[data-mantine-scrollbar] > div {
+  background-color: #FFE100 !important;
+  opacity: 1 !important;
+}

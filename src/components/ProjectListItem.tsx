@@ -4,6 +4,8 @@ import { DiscoveredWorkspace } from "../types";
 
 interface Props {
   workspace: DiscoveredWorkspace;
+  isFavorite: boolean;
+  onToggleFavorite: () => void;
   onClick?: () => void;
 }
 
@@ -51,7 +53,7 @@ function relativeTime(secs: string): string {
   return "just now";
 }
 
-export default function ProjectListItem({ workspace, onClick }: Props) {
+export default function ProjectListItem({ workspace, isFavorite, onToggleFavorite, onClick }: Props) {
   const [hovered, setHovered] = useState(false);
   const isMissing = !workspace.path_exists;
   const color = colorFor(workspace.display_name);
@@ -126,6 +128,37 @@ export default function ProjectListItem({ workspace, onClick }: Props) {
 
       {/* Meta */}
       <Stack gap={4} align="flex-end" style={{ flexShrink: 0 }}>
+        <Tooltip label={isFavorite ? "Remove from favorites" : "Add to favorites"} withArrow>
+          <Box
+            component="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFavorite();
+            }}
+            aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
+            style={{
+              width: 22,
+              height: 22,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: "none",
+              background: "transparent",
+              color: isFavorite ? "#FFE100" : "#71717a",
+              cursor: "pointer",
+              padding: 0,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill={isFavorite ? "currentColor" : "none"}>
+              <path
+                d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </Box>
+        </Tooltip>
         {isMissing ? (
           <Text size="xs" style={{ color: "#7f1d1d" }}>not found</Text>
         ) : (

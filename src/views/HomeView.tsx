@@ -1,19 +1,41 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Box, Text, TextInput, Button, Group, Stack, ScrollArea, UnstyledButton, Skeleton } from "@mantine/core";
-import { DiscoveredWorkspace } from "../types";
+import { ClaudeAccountInfo, DiscoveredWorkspace } from "../types";
 import ProjectListItem from "../components/ProjectListItem";
+import sidebarTitle from "../assets/sidebar-title.svg";
+import { md5 } from "../shared/md5";
 
 type NavItem = "projects" | "favorites";
+const FAVORITES_STORAGE_KEY = "claudy.favoriteWorkspaces";
 
 interface Props {
   workspaces: DiscoveredWorkspace[];
   isLoading: boolean;
+  accountInfo: ClaudeAccountInfo | null;
   onOpenWorkspace: (workspace: DiscoveredWorkspace) => void;
 }
 
-export default function HomeView({ workspaces, isLoading, onOpenWorkspace }: Props) {
+export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWorkspace }: Props) {
   const [activeNav, setActiveNav] = useState<NavItem>("projects");
   const [search, setSearch] = useState("");
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(FAVORITES_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      const values = parsed.filter((v): v is string => typeof v === "string");
+      setFavorites(new Set(values));
+    } catch {
+      // Ignore malformed local storage values.
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(Array.from(favorites)));
+  }, [favorites]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
@@ -27,8 +49,14 @@ export default function HomeView({ workspaces, isLoading, onOpenWorkspace }: Pro
 
   const listed =
     activeNav === "favorites"
-      ? filtered.filter((w) => w.path_exists)
+      ? filtered.filter((w) => favorites.has(w.encoded_name))
       : filtered;
+  const email = accountInfo?.email?.trim().toLowerCase() ?? "";
+  const avatarUrl = email
+    ? `https://www.gravatar.com/avatar/${md5(email)}?s=80&d=identicon`
+    : "https://www.gravatar.com/avatar/?s=80&d=mp";
+  const accountName = accountInfo?.display_name ?? "Claude account";
+  const accountSubtitle = accountInfo?.email ?? "No account detected";
 
   return (
     <Box
@@ -55,31 +83,22 @@ export default function HomeView({ workspaces, isLoading, onOpenWorkspace }: Pro
 
         {/* App identity */}
         <Box px={16} pb={24}>
-          <Group gap={10} align="center">
+          <Group justify="space-between" align="flex-end" wrap="nowrap" gap={8}>
             <Box
+              component="img"
+              src={sidebarTitle}
+              alt="Claudy"
               style={{
-                width: 34,
-                height: 34,
-                borderRadius: 8,
-                background: "#1e1e24",
-                border: "1px solid #2a2a32",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontWeight: 800,
-                fontSize: 15,
-                color: "#f4f4f5",
-                flexShrink: 0,
-                letterSpacing: -1,
-                fontFamily: "monospace",
+                display: "block",
+                width: "100%",
+                maxWidth: 150,
+                height: "auto",
+                minWidth: 0,
               }}
-            >
-              C
-            </Box>
-            <Stack gap={1}>
-              <Text fw={600} size="sm" c="#f4f4f5" lh={1.2}>Claudy</Text>
-              <Text size="xs" c="#52525b" lh={1.2}>0.1.0</Text>
-            </Stack>
+            />
+            <Text size="xs" c="#52525b" lh={1.2} mb={2} style={{ flexShrink: 0 }}>
+              0.1.0
+            </Text>
           </Group>
         </Box>
 
@@ -183,11 +202,68 @@ export default function HomeView({ workspaces, isLoading, onOpenWorkspace }: Pro
           ) : (
             <Box>
               {listed.map((w) => (
-                <ProjectListItem key={w.encoded_name} workspace={w} onClick={() => w.path_exists && onOpenWorkspace(w)} />
+                <ProjectListItem
+                  key={w.encoded_name}
+                  workspace={w}
+                  isFavorite={favorites.has(w.encoded_name)}
+                  onToggleFavorite={() =>
+                    setFavorites((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(w.encoded_name)) {
+                        next.delete(w.encoded_name);
+                      } else {
+                        next.add(w.encoded_name);
+                      }
+                      return next;
+                    })
+                  }
+                  onClick={() => w.path_exists && onOpenWorkspace(w)}
+                />
               ))}
             </Box>
           )}
         </ScrollArea>
+        <Box
+          px={20}
+          py={12}
+          style={{
+            borderTop: "1px solid #1f1f23",
+            display: "flex",
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          <Group
+            gap={10}
+            wrap="nowrap"
+            style={{
+              width: "100%",
+              maxWidth: 420,
+              minWidth: 0,
+              padding: "8px 10px",
+              borderRadius: 10,
+              background: "#121217",
+              border: "1px solid #23232a",
+            }}
+          >
+            <Box
+              component="img"
+              src={avatarUrl}
+              alt="Account avatar"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: "50%",
+                border: "1px solid #2f2f38",
+                flexShrink: 0,
+              }}
+            />
+            <Stack gap={1} style={{ minWidth: 0, flex: 1 }}>
+              <Text size="sm" c="#e4e4e7" truncate>{accountName}</Text>
+              <Text size="xs" c="#71717a" truncate>{accountSubtitle}</Text>
+            </Stack>
+          </Group>
+        </Box>
       </Box>
     </Box>
   );
@@ -214,30 +290,22 @@ function NavButton({
       style={{
         width: "100%",
         padding: "7px 12px",
-        borderRadius: 7,
+        borderRadius: 0,
         fontSize: 13,
         fontWeight: active ? 500 : 400,
         color: active ? "#f0f0f2" : hovered ? "#a1a1aa" : "#71717a",
-        transition: "background 100ms, color 100ms, box-shadow 100ms",
-        // 3D raised effect when active
-        background: active
-          ? "linear-gradient(180deg, #28282f 0%, #1e1e25 100%)"
-          : hovered
-          ? "rgba(255,255,255,0.03)"
-          : "transparent",
+        transition: "background 100ms, color 100ms",
+        background: active ? "#1e1e24" : hovered ? "#18181b" : "transparent",
         border: active ? "1px solid" : "1px solid transparent",
-        borderColor: active
-          ? "rgba(255,255,255,0.13) rgba(255,255,255,0.07) rgba(0,0,0,0.45) rgba(255,255,255,0.07)"
-          : "transparent",
-        boxShadow: active
-          ? "0 2px 6px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.07)"
-          : "none",
+        borderColor: active ? "#2a2a32" : "transparent",
+        borderLeft: active ? "2px solid #FFE100" : "2px solid transparent",
       }}
     >
       {children}
     </UnstyledButton>
   );
 }
+
 
 function LoadingSkeleton() {
   return (

@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+use tauri::{AppHandle, Emitter};
 
 // ─── Data types ───────────────────────────────────────────────────────────────
 
@@ -21,6 +22,14 @@ pub struct DiscoveredWorkspace {
     pub display_name: String,
     pub path_exists: bool,
     pub sessions: Vec<DiscoveredSession>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct ClaudeAccountInfo {
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    pub organization_name: Option<String>,
+    pub organization_role: Option<String>,
 }
 
 // ─── Path decoding ────────────────────────────────────────────────────────────
@@ -252,12 +261,144 @@ fn scan_existing_sessions() -> Vec<DiscoveredWorkspace> {
     workspaces
 }
 
+#[tauri::command]
+fn get_claude_account_info() -> ClaudeAccountInfo {
+    let home = match dirs_next::home_dir() {
+        Some(h) => h,
+        None => return ClaudeAccountInfo::default(),
+    };
+
+    let path = home.join(".claude.json");
+    let raw = match fs::read_to_string(path) {
+        Ok(v) => v,
+        Err(_) => return ClaudeAccountInfo::default(),
+    };
+
+    let json: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return ClaudeAccountInfo::default(),
+    };
+
+    let oauth = match json.get("oauthAccount") {
+        Some(v) => v,
+        None => return ClaudeAccountInfo::default(),
+    };
+
+    let get_str = |k: &str| -> Option<String> {
+        oauth
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+
+    ClaudeAccountInfo {
+        email: get_str("emailAddress"),
+        display_name: get_str("displayName"),
+        organization_name: get_str("organizationName"),
+        organization_role: get_str("organizationRole"),
+    }
+}
+
+// ─── Send message ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn send_message(
+    app: AppHandle,
+    session_id: String,
+    cwd: String,
+    message: String,
+    model: String,
+    effort: String,
+) -> Result<(), String> {
+    std::thread::spawn(move || {
+        let home = dirs_next::home_dir().unwrap_or_default();
+        let full_path = format!(
+            "{}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+            home.to_string_lossy()
+        );
+
+        // Find claude binary
+        let candidates = [
+            format!("{}/.local/bin/claude", home.to_string_lossy()),
+            "/usr/local/bin/claude".to_string(),
+            "/opt/homebrew/bin/claude".to_string(),
+        ];
+        let claude_bin = candidates
+            .iter()
+            .find(|p| std::path::Path::new(p.as_str()).exists())
+            .cloned()
+            .unwrap_or_else(|| "claude".to_string());
+
+        eprintln!("[send_message] claude={} cwd={} session={}", claude_bin, cwd, session_id);
+
+        let mut cmd = std::process::Command::new(&claude_bin);
+        cmd.arg("-p").arg(&message)
+           .arg("--resume").arg(&session_id)
+           .arg("--output-format").arg("stream-json")
+           .arg("--verbose")
+           .arg("--include-partial-messages")
+           .current_dir(&cwd)
+           .stdout(std::process::Stdio::piped())
+           .stderr(std::process::Stdio::piped())
+           .env("PATH", &full_path);
+
+        if !model.is_empty() && model != "default" {
+            cmd.arg("--model").arg(&model);
+        }
+        if !effort.is_empty() && effort != "default" {
+            cmd.arg("--effort").arg(&effort);
+        }
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                app.emit("claude-error", e.to_string()).ok();
+                return;
+            }
+        };
+
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        // Emit stderr in background thread (skip bun/AVX warnings)
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().flatten() {
+                eprintln!("[claude stderr] {}", line);
+                if line.contains("AVX") || line.contains("bun-darwin") || line.starts_with("warn:") {
+                    continue;
+                }
+                app2.emit("claude-error", line).ok();
+            }
+        });
+
+        for line in BufReader::new(stdout).lines().flatten() {
+            let trimmed = line.trim().to_string();
+            if !trimmed.is_empty() {
+                eprintln!("[claude stdout] {}", &trimmed[..trimmed.len().min(120)]);
+                app.emit("claude-stream", trimmed).ok();
+            }
+        }
+
+        child.wait().ok();
+        app.emit("claude-done", ()).ok();
+    });
+
+    Ok(())
+}
+
 // ─── App entry ────────────────────────────────────────────────────────────────
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![scan_existing_sessions, get_session_messages])
+        .invoke_handler(tauri::generate_handler![
+            scan_existing_sessions,
+            get_session_messages,
+            get_claude_account_info,
+            send_message
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Claudy");
 }

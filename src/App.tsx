@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { DiscoveredWorkspace } from "./types";
+import { ClaudeAccountInfo, DiscoveredWorkspace } from "./types";
 import HomeView from "./views/HomeView";
 import ChatView from "./views/ChatView";
 
@@ -17,10 +17,16 @@ export default function App() {
     queryFn: () => invoke<DiscoveredWorkspace[]>("scan_existing_sessions"),
   });
 
+  const { data: accountInfo = null } = useQuery({
+    queryKey: ["claude-account-info"],
+    queryFn: () => invoke<ClaudeAccountInfo>("get_claude_account_info"),
+  });
+
   if (view.kind === "chat") {
     return (
       <ChatView
         workspace={view.workspace}
+        accountInfo={accountInfo}
         onBack={() => setView({ kind: "home" })}
       />
     );
@@ -30,6 +36,7 @@ export default function App() {
     <HomeView
       workspaces={workspaces}
       isLoading={isLoading}
+      accountInfo={accountInfo}
       onOpenWorkspace={(workspace) => setView({ kind: "chat", workspace })}
     />
   );
