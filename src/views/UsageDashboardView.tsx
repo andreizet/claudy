@@ -3,6 +3,14 @@ import { Alert, Box, Group, ScrollArea, Skeleton, Stack, Table, Text, UnstyledBu
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { UsageDashboard } from "../types";
+import {
+  compareProjectRows,
+  compareSessionRows,
+  ProjectSortKey,
+  SessionSortKey,
+  SortState,
+  toggleSort,
+} from "../shared/usageDashboard";
 
 type UsageInterval = "7d" | "30d" | "90d" | "all";
 
@@ -15,11 +23,11 @@ const INTERVALS: Array<{ value: UsageInterval; label: string }> = [
 
 export default function UsageDashboardView() {
   const [interval, setInterval] = useState<UsageInterval>("30d");
-  const [projectSort, setProjectSort] = useState<{ key: ProjectSortKey; direction: "asc" | "desc" }>({
+  const [projectSort, setProjectSort] = useState<SortState<ProjectSortKey>>({
     key: "tokens",
     direction: "desc",
   });
-  const [sessionSort, setSessionSort] = useState<{ key: SessionSortKey; direction: "asc" | "desc" }>({
+  const [sessionSort, setSessionSort] = useState<SortState<SessionSortKey>>({
     key: "started",
     direction: "desc",
   });
@@ -301,11 +309,6 @@ function DataTable({ headers, rows }: { headers: string[]; rows: string[][] }) {
   );
 }
 
-type ProjectSortKey = "project" | "sessions" | "tokens" | "cost" | "messages" | "last_active";
-type SessionSortKey = "session" | "project" | "started" | "duration" | "tokens" | "cost" | "prompt";
-type SortDirection = "asc" | "desc";
-type SortState<TSortKey extends string> = { key: TSortKey; direction: SortDirection };
-
 function SortableTable<TSortKey extends string>({
   columns,
   rows,
@@ -419,61 +422,4 @@ function formatDateTime(value: string) {
 function truncate(value: string, max: number) {
   if (value.length <= max) return value;
   return `${value.slice(0, max - 1)}…`;
-}
-
-function toggleSort<TSortKey extends string>(
-  current: SortState<TSortKey>,
-  key: TSortKey,
-): SortState<TSortKey> {
-  if (current.key === key) {
-    const direction: SortDirection = current.direction === "asc" ? "desc" : "asc";
-    return { key, direction };
-  }
-  return { key, direction: "desc" };
-}
-
-function compareProjectRows(
-  a: UsageDashboard["projects"][number],
-  b: UsageDashboard["projects"][number],
-  sort: SortState<ProjectSortKey>,
-) {
-  const multiplier = sort.direction === "asc" ? 1 : -1;
-  switch (sort.key) {
-    case "project":
-      return a.display_name.localeCompare(b.display_name) * multiplier;
-    case "sessions":
-      return (a.sessions - b.sessions) * multiplier;
-    case "tokens":
-      return (a.total_tokens - b.total_tokens) * multiplier;
-    case "cost":
-      return (a.cost_usd - b.cost_usd) * multiplier;
-    case "messages":
-      return (a.messages - b.messages) * multiplier;
-    case "last_active":
-      return a.last_active.localeCompare(b.last_active) * multiplier;
-  }
-}
-
-function compareSessionRows(
-  a: UsageDashboard["sessions"][number],
-  b: UsageDashboard["sessions"][number],
-  sort: SortState<SessionSortKey>,
-) {
-  const multiplier = sort.direction === "asc" ? 1 : -1;
-  switch (sort.key) {
-    case "session":
-      return a.session_id.localeCompare(b.session_id) * multiplier;
-    case "project":
-      return a.display_name.localeCompare(b.display_name) * multiplier;
-    case "started":
-      return a.start_time.localeCompare(b.start_time) * multiplier;
-    case "duration":
-      return (a.duration_minutes - b.duration_minutes) * multiplier;
-    case "tokens":
-      return (a.total_tokens - b.total_tokens) * multiplier;
-    case "cost":
-      return (a.cost_usd - b.cost_usd) * multiplier;
-    case "prompt":
-      return a.first_prompt.localeCompare(b.first_prompt) * multiplier;
-  }
 }

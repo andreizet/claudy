@@ -267,12 +267,7 @@ fn fuzzy_find(base: &Path, tokens: &[String]) -> Option<PathBuf> {
     None
 }
 
-fn decode_project_path(encoded_dir_name: &str) -> (PathBuf, bool) {
-    let home = match dirs_next::home_dir() {
-        Some(h) => h,
-        None => return (PathBuf::from(encoded_dir_name), false),
-    };
-
+fn decode_project_path_with_home(encoded_dir_name: &str, home: &Path) -> (PathBuf, bool) {
     let home_str = home.to_string_lossy();
     let home_encoded = claude_encode(&home_str);
 
@@ -293,6 +288,15 @@ fn decode_project_path(encoded_dir_name: &str) -> (PathBuf, bool) {
     let naive_path = PathBuf::from(format!("/{}", naive));
     let exists = naive_path.exists();
     (naive_path, exists)
+}
+
+fn decode_project_path(encoded_dir_name: &str) -> (PathBuf, bool) {
+    let home = match dirs_next::home_dir() {
+        Some(h) => h,
+        None => return (PathBuf::from(encoded_dir_name), false),
+    };
+
+    decode_project_path_with_home(encoded_dir_name, &home)
 }
 
 // ─── Session reading ──────────────────────────────────────────────────────────
@@ -430,11 +434,7 @@ fn iso_date_prefix(value: &str) -> Option<String> {
     value.get(0..10).map(|date| date.to_string())
 }
 
-fn load_session_meta_files() -> Vec<SessionMetaFile> {
-    let Some(home) = dirs_next::home_dir() else {
-        return vec![];
-    };
-    let root = home.join(".claude").join("usage-data").join("session-meta");
+fn load_session_meta_files_from(root: &Path) -> Vec<SessionMetaFile> {
     if !root.exists() {
         return vec![];
     }
@@ -455,11 +455,14 @@ fn load_session_meta_files() -> Vec<SessionMetaFile> {
     items
 }
 
-fn load_session_json_metrics() -> HashMap<String, SessionJsonMetrics> {
+fn load_session_meta_files() -> Vec<SessionMetaFile> {
     let Some(home) = dirs_next::home_dir() else {
-        return HashMap::new();
+        return vec![];
     };
-    let root = home.join(".claude").join("projects");
+    load_session_meta_files_from(&home.join(".claude").join("usage-data").join("session-meta"))
+}
+
+fn load_session_json_metrics_from(root: &Path) -> HashMap<String, SessionJsonMetrics> {
     if !root.exists() {
         return HashMap::new();
     }
@@ -540,11 +543,19 @@ fn load_session_json_metrics() -> HashMap<String, SessionJsonMetrics> {
     metrics
 }
 
-#[tauri::command]
-fn get_usage_dashboard(interval: String) -> Result<UsageDashboard, String> {
+fn load_session_json_metrics() -> HashMap<String, SessionJsonMetrics> {
+    let Some(home) = dirs_next::home_dir() else {
+        return HashMap::new();
+    };
+    load_session_json_metrics_from(&home.join(".claude").join("projects"))
+}
+
+fn build_usage_dashboard(
+    interval: String,
+    session_meta: Vec<SessionMetaFile>,
+    json_metrics: HashMap<String, SessionJsonMetrics>,
+) -> UsageDashboard {
     let cutoff = parse_interval_cutoff(&interval);
-    let session_meta = load_session_meta_files();
-    let json_metrics = load_session_json_metrics();
 
     let filtered_meta: Vec<SessionMetaFile> = session_meta
         .into_iter()
@@ -721,14 +732,23 @@ fn get_usage_dashboard(interval: String) -> Result<UsageDashboard, String> {
         },
     };
 
-    Ok(UsageDashboard {
+    UsageDashboard {
         interval,
         summary,
         daily,
         models,
         projects,
         sessions,
-    })
+    }
+}
+
+#[tauri::command]
+fn get_usage_dashboard(interval: String) -> Result<UsageDashboard, String> {
+    Ok(build_usage_dashboard(
+        interval,
+        load_session_meta_files(),
+        load_session_json_metrics(),
+    ))
 }
 
 fn sanitize_terminal_output(raw: &str) -> String {
@@ -862,9 +882,7 @@ fn get_session_messages(file_path: String) -> Vec<serde_json::Value> {
     records
 }
 
-#[tauri::command]
-fn delete_session_file(file_path: String) -> Result<(), String> {
-    let path = PathBuf::from(file_path);
+fn delete_session_files_for_path(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
@@ -894,19 +912,18 @@ fn delete_session_file(file_path: String) -> Result<(), String> {
     }
 
     if !removed_any && path.exists() {
-        fs::remove_file(&path).map_err(|e| e.to_string())?;
+        fs::remove_file(path).map_err(|e| e.to_string())?;
     }
 
     Ok(())
 }
 
 #[tauri::command]
-fn scan_existing_sessions() -> Vec<DiscoveredWorkspace> {
-    let claude_projects_dir = {
-        let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        home.join(".claude").join("projects")
-    };
+fn delete_session_file(file_path: String) -> Result<(), String> {
+    delete_session_files_for_path(&PathBuf::from(file_path))
+}
 
+fn scan_existing_sessions_in(claude_projects_dir: &Path, home: &Path) -> Vec<DiscoveredWorkspace> {
     if !claude_projects_dir.exists() {
         return vec![];
     }
@@ -921,7 +938,7 @@ fn scan_existing_sessions() -> Vec<DiscoveredWorkspace> {
                 return None;
             }
             let dir_name = path.file_name()?.to_str()?.to_string();
-            let (real_path, path_exists) = decode_project_path(&dir_name);
+            let (real_path, path_exists) = decode_project_path_with_home(&dir_name, home);
             Some(collect_workspace_from_project_dir(&path, dir_name, real_path, path_exists))
         })
         .collect();
@@ -935,6 +952,13 @@ fn scan_existing_sessions() -> Vec<DiscoveredWorkspace> {
     });
 
     workspaces
+}
+
+#[tauri::command]
+fn scan_existing_sessions() -> Vec<DiscoveredWorkspace> {
+    let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let claude_projects_dir = home.join(".claude").join("projects");
+    scan_existing_sessions_in(&claude_projects_dir, &home)
 }
 
 #[tauri::command]
@@ -1652,4 +1676,126 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Claudy");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(1);
+
+    fn temp_test_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "claudy-tests-{}-{}",
+            std::process::id(),
+            NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn decode_project_path_uses_fuzzy_matching_from_home() {
+        let home = temp_test_dir();
+        let project = home.join("_work").join("claudy").join("claudy");
+        fs::create_dir_all(&project).unwrap();
+
+        let encoded = claude_encode(&project.to_string_lossy());
+        let (decoded, exists) = decode_project_path_with_home(&encoded, &home);
+
+        assert!(exists);
+        assert_eq!(decoded, project);
+
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn scan_existing_sessions_discovers_projects_and_first_messages() {
+        let home = temp_test_dir();
+        let project = home.join("_work").join("claudy").join("claudy");
+        fs::create_dir_all(&project).unwrap();
+
+        let projects_dir = home.join(".claude").join("projects");
+        let encoded = claude_encode(&project.to_string_lossy());
+        let project_dir = projects_dir.join(&encoded);
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("session-a.jsonl"),
+            r#"{"type":"user","message":{"role":"user","content":"Hello Claudy"},"timestamp":"2026-03-08T10:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let workspaces = scan_existing_sessions_in(&projects_dir, &home);
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].display_name, "claudy");
+        assert_eq!(workspaces[0].sessions.len(), 1);
+        assert_eq!(workspaces[0].sessions[0].first_message.as_deref(), Some("Hello Claudy"));
+
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn delete_session_file_removes_all_related_files() {
+        let dir = temp_test_dir();
+        let session = dir.join("session-a.jsonl");
+        let companion = dir.join("session-a.txt");
+        let other = dir.join("session-b.jsonl");
+        fs::write(&session, "[]").unwrap();
+        fs::write(&companion, "companion").unwrap();
+        fs::write(&other, "[]").unwrap();
+
+        delete_session_files_for_path(&session).unwrap();
+
+        assert!(!session.exists());
+        assert!(!companion.exists());
+        assert!(other.exists());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn usage_dashboard_aggregates_local_claude_data() {
+        let project = "/Users/tester/_work/claudy";
+        let meta = vec![SessionMetaFile {
+            session_id: "session-a".to_string(),
+            project_path: project.to_string(),
+            start_time: "2026-03-08T10:00:00Z".to_string(),
+            duration_minutes: 15,
+            user_message_count: 2,
+            assistant_message_count: 3,
+            tool_counts: HashMap::from([("Read".to_string(), 2)]),
+            input_tokens: 100,
+            output_tokens: 50,
+            first_prompt: "Build the dashboard".to_string(),
+            lines_added: 12,
+            lines_removed: 4,
+            files_modified: 2,
+        }];
+
+        let metrics = HashMap::from([(
+            "session-a".to_string(),
+            SessionJsonMetrics {
+                cost_usd: 1.5,
+                input_tokens: 120,
+                output_tokens: 80,
+                messages: 3,
+                daily: HashMap::from([("2026-03-08".to_string(), (200, 1.5))]),
+                models: HashMap::from([("claude-sonnet-4-6".to_string(), (120, 80, 1.5))]),
+            },
+        )]);
+
+        let dashboard = build_usage_dashboard("all".to_string(), meta, metrics);
+
+        assert_eq!(dashboard.summary.total_sessions, 1);
+        assert_eq!(dashboard.summary.total_tokens, 200);
+        assert_eq!(dashboard.summary.total_tool_calls, 2);
+        assert_eq!(dashboard.summary.total_cost_usd, 1.5);
+        assert_eq!(dashboard.projects.len(), 1);
+        assert_eq!(dashboard.projects[0].display_name, "claudy");
+        assert_eq!(dashboard.models[0].model, "claude-sonnet-4-6");
+        assert_eq!(dashboard.daily[0].date, "2026-03-08");
+    }
 }

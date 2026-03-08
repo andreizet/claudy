@@ -1130,7 +1130,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
 
 // ── Session sidebar item ──────────────────────────────────────────────────────
 
-function SessionItem({
+export function SessionItem({
   session,
   active,
   pinned,
