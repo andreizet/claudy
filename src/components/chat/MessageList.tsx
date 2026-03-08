@@ -46,11 +46,13 @@ SyntaxHighlighter.registerLanguage("markdown", markdown);
 interface Props {
   messages: JsonlRecord[];
   streamText?: string;
+  showGenerating?: boolean;
+  pendingUserText?: string;
   sessionId?: string | null;
   userAvatarUrl?: string;
 }
 
-export default function MessageList({ messages, streamText, sessionId, userAvatarUrl }: Props) {
+export default function MessageList({ messages, streamText, showGenerating, pendingUserText, sessionId, userAvatarUrl }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [atTop, setAtTop] = useState(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -72,6 +74,7 @@ export default function MessageList({ messages, streamText, sessionId, userAvata
 
   const items: Array<
     | { key: string; kind: "message"; record: JsonlRecord }
+    | { key: string; kind: "pending-user"; text: string }
     | { key: string; kind: "stream"; text: string }
   > = [
     ...messages.map((record, index) => ({
@@ -79,7 +82,10 @@ export default function MessageList({ messages, streamText, sessionId, userAvata
       kind: "message" as const,
       record,
     })),
-    ...(streamText ? [{ key: `${sessionId ?? "session"}-stream`, kind: "stream" as const, text: streamText }] : []),
+    ...(pendingUserText ? [{ key: `${sessionId ?? "session"}-pending-user`, kind: "pending-user" as const, text: pendingUserText }] : []),
+    ...((streamText || showGenerating)
+      ? [{ key: `${sessionId ?? "session"}-stream`, kind: "stream" as const, text: streamText ?? "" }]
+      : []),
   ];
 
   const offsets: number[] = new Array(items.length);
@@ -189,7 +195,7 @@ export default function MessageList({ messages, streamText, sessionId, userAvata
     }
   }
 
-  if (messages.length === 0) {
+  if (messages.length === 0 && !streamText && !showGenerating && !pendingUserText) {
     return (
       <Box style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <Text size="sm" c="#3f3f46">No messages in this session</Text>
@@ -214,6 +220,8 @@ export default function MessageList({ messages, streamText, sessionId, userAvata
               >
                 {item.kind === "message" ? (
                   <MessageItem record={item.record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />
+                ) : item.kind === "pending-user" ? (
+                  <UserBubble text={item.text} avatarUrl={userAvatarUrl} />
                 ) : (
                   <StreamingItem text={item.text} />
                 )}
@@ -254,7 +262,7 @@ function findVisibleIndex(offsets: number[], target: number): number {
 function findVisibleEndIndex(
   offsets: number[],
   itemHeights: Record<number, number>,
-  items: Array<{ kind: "message" | "stream" }>,
+  items: Array<{ kind: "message" | "pending-user" | "stream" }>,
   targetBottom: number
 ): number {
   let index = findVisibleIndex(offsets, targetBottom);
@@ -299,10 +307,52 @@ function StreamingItem({ text }: { text: string }) {
   return (
     <Box style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
       <AssistantText text={text} />
-      <Box style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <Box style={{ width: 6, height: 6, borderRadius: "50%", background: "#3f3f46", animation: "pulse 1s infinite" }} />
-        <Text size="xs" c="#3f3f46">Generating…</Text>
+      <GeneratingIndicator />
+    </Box>
+  );
+}
+
+function GeneratingIndicator() {
+  return (
+    <Box
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        width: "fit-content",
+        padding: "8px 10px",
+        borderRadius: 999,
+        background: "#141418",
+        border: "1px solid #23232a",
+      }}
+    >
+      <Text size="xs" c="#71717a">Generating</Text>
+      <Box style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        {[0, 1, 2].map((index) => (
+          <Box
+            key={index}
+            style={{
+              width: 5,
+              height: 5,
+              borderRadius: "50%",
+              background: "#71717a",
+              animation: `claudyTyping 1.2s ${index * 0.16}s infinite ease-in-out`,
+            }}
+          />
+        ))}
       </Box>
+      <style>{`
+        @keyframes claudyTyping {
+          0%, 80%, 100% {
+            transform: translateY(0);
+            opacity: 0.35;
+          }
+          40% {
+            transform: translateY(-3px);
+            opacity: 1;
+          }
+        }
+      `}</style>
     </Box>
   );
 }

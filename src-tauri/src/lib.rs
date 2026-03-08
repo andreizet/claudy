@@ -1,4 +1,5 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -7,9 +8,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use base64::Engine;
+use time::{Duration as TimeDuration, OffsetDateTime};
 
 // ─── Data types ───────────────────────────────────────────────────────────────
 
@@ -36,6 +38,124 @@ pub struct ClaudeAccountInfo {
     pub display_name: Option<String>,
     pub organization_name: Option<String>,
     pub organization_role: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct ClaudePlanUsageBucket {
+    pub percent_used: Option<f64>,
+    pub reset_at: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct ClaudePlanUsage {
+    pub current_session: ClaudePlanUsageBucket,
+    pub weekly_limits: ClaudePlanUsageBucket,
+    pub fetched_at_ms: u64,
+    pub is_live: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct UsageSummary {
+    pub total_sessions: usize,
+    pub total_messages: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_tokens: u64,
+    pub total_cost_usd: f64,
+    pub total_tool_calls: u64,
+    pub total_lines_added: u64,
+    pub total_lines_removed: u64,
+    pub total_files_modified: u64,
+    pub active_days: usize,
+    pub avg_messages_per_session: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct UsageDailyPoint {
+    pub date: String,
+    pub sessions: u64,
+    pub messages: u64,
+    pub total_tokens: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct UsageModelBreakdown {
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cost_usd: f64,
+    pub sessions: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct UsageProjectBreakdown {
+    pub project_path: String,
+    pub display_name: String,
+    pub sessions: u64,
+    pub messages: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cost_usd: f64,
+    pub lines_added: u64,
+    pub lines_removed: u64,
+    pub files_modified: u64,
+    pub last_active: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct UsageSessionBreakdown {
+    pub session_id: String,
+    pub project_path: String,
+    pub display_name: String,
+    pub start_time: String,
+    pub duration_minutes: u64,
+    pub user_messages: u64,
+    pub assistant_messages: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cost_usd: f64,
+    pub first_prompt: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct UsageDashboard {
+    pub interval: String,
+    pub summary: UsageSummary,
+    pub daily: Vec<UsageDailyPoint>,
+    pub models: Vec<UsageModelBreakdown>,
+    pub projects: Vec<UsageProjectBreakdown>,
+    pub sessions: Vec<UsageSessionBreakdown>,
+}
+
+#[derive(Deserialize, Clone, Default)]
+struct SessionMetaFile {
+    session_id: String,
+    project_path: String,
+    start_time: String,
+    duration_minutes: u64,
+    user_message_count: u64,
+    assistant_message_count: u64,
+    tool_counts: HashMap<String, u64>,
+    input_tokens: u64,
+    output_tokens: u64,
+    first_prompt: String,
+    lines_added: u64,
+    lines_removed: u64,
+    files_modified: u64,
+}
+
+#[derive(Default, Clone)]
+struct SessionJsonMetrics {
+    cost_usd: f64,
+    input_tokens: u64,
+    output_tokens: u64,
+    messages: u64,
+    daily: HashMap<String, (u64, f64)>,
+    models: HashMap<String, (u64, u64, f64)>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -66,6 +186,17 @@ struct InteractiveSession {
 #[derive(Default)]
 struct InteractiveSessionStore {
     sessions: Mutex<HashMap<String, InteractiveSession>>,
+}
+
+#[derive(Default)]
+struct PlanUsageCache {
+    entries: Mutex<HashMap<String, CachedPlanUsage>>,
+}
+
+#[derive(Clone)]
+struct CachedPlanUsage {
+    usage: ClaudePlanUsage,
+    fetched_at: Instant,
 }
 
 static NEXT_INTERACTIVE_ID: AtomicU64 = AtomicU64::new(1);
@@ -215,6 +346,48 @@ fn modified_at_secs(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+fn collect_workspace_from_project_dir(
+    claude_project_dir: &Path,
+    dir_name: String,
+    real_path: PathBuf,
+    path_exists: bool,
+) -> DiscoveredWorkspace {
+    let decoded_path = real_path.to_string_lossy().to_string();
+    let display_name = real_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&decoded_path)
+        .to_string();
+
+    let mut sessions: Vec<DiscoveredSession> = fs::read_dir(claude_project_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|f| {
+            let fp = f.path();
+            if fp.extension()?.to_str()? != "jsonl" {
+                return None;
+            }
+            Some(DiscoveredSession {
+                id: fp.file_stem()?.to_str()?.to_string(),
+                file_path: fp.to_string_lossy().to_string(),
+                modified_at: modified_at_secs(&fp),
+                first_message: read_first_message(&fp),
+            })
+        })
+        .collect();
+
+    sessions.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+
+    DiscoveredWorkspace {
+        encoded_name: dir_name,
+        decoded_path,
+        display_name,
+        path_exists,
+        sessions,
+    }
+}
+
 fn claude_binary_and_path() -> (String, String) {
     let home = dirs_next::home_dir().unwrap_or_default();
     let full_path = format!(
@@ -234,6 +407,437 @@ fn claude_binary_and_path() -> (String, String) {
         .unwrap_or_else(|| "claude".to_string());
 
     (claude_bin, full_path)
+}
+
+fn parse_interval_cutoff(interval: &str) -> Option<String> {
+    if interval == "all" {
+        return None;
+    }
+
+    let days = match interval {
+        "7d" => 7,
+        "30d" => 30,
+        "90d" => 90,
+        _ => 30,
+    };
+
+    let now = OffsetDateTime::now_utc();
+    let cutoff = now - TimeDuration::days((days - 1) as i64);
+    Some(format!("{:04}-{:02}-{:02}", cutoff.year(), u8::from(cutoff.month()), cutoff.day()))
+}
+
+fn iso_date_prefix(value: &str) -> Option<String> {
+    value.get(0..10).map(|date| date.to_string())
+}
+
+fn load_session_meta_files() -> Vec<SessionMetaFile> {
+    let Some(home) = dirs_next::home_dir() else {
+        return vec![];
+    };
+    let root = home.join(".claude").join("usage-data").join("session-meta");
+    if !root.exists() {
+        return vec![];
+    }
+
+    let mut items = Vec::new();
+    for entry in walkdir::WalkDir::new(root).into_iter().flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(raw) = fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<SessionMetaFile>(&raw) else {
+            continue;
+        };
+        items.push(meta);
+    }
+    items
+}
+
+fn load_session_json_metrics() -> HashMap<String, SessionJsonMetrics> {
+    let Some(home) = dirs_next::home_dir() else {
+        return HashMap::new();
+    };
+    let root = home.join(".claude").join("projects");
+    if !root.exists() {
+        return HashMap::new();
+    }
+
+    let mut metrics = HashMap::<String, SessionJsonMetrics>::new();
+    for entry in walkdir::WalkDir::new(root).into_iter().flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if path.to_string_lossy().contains("/subagents/") {
+            continue;
+        }
+
+        let Some(session_id) = path.file_stem().and_then(|value| value.to_str()).map(|v| v.to_string()) else {
+            continue;
+        };
+        let entry_metrics = metrics.entry(session_id).or_default();
+        let Ok(file) = fs::File::open(path) else {
+            continue;
+        };
+
+        for line in BufReader::new(file).lines().flatten() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if record.get("type").and_then(|value| value.as_str()) != Some("assistant") {
+                continue;
+            }
+
+            entry_metrics.messages += 1;
+            let cost = record.get("costUSD").and_then(|value| value.as_f64()).unwrap_or(0.0);
+            entry_metrics.cost_usd += cost;
+
+            let input = record
+                .get("usage")
+                .and_then(|usage| usage.get("input_tokens"))
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let output = record
+                .get("usage")
+                .and_then(|usage| usage.get("output_tokens"))
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            entry_metrics.input_tokens += input;
+            entry_metrics.output_tokens += output;
+
+            if let Some(timestamp) = record.get("timestamp").and_then(|value| value.as_str()) {
+                if let Some(date) = iso_date_prefix(timestamp) {
+                    let daily = entry_metrics.daily.entry(date).or_insert((0, 0.0));
+                    daily.0 += input + output;
+                    daily.1 += cost;
+                }
+            }
+
+            if let Some(model) = record
+                .get("message")
+                .and_then(|message| message.get("model"))
+                .and_then(|value| value.as_str())
+            {
+                let model_entry = entry_metrics
+                    .models
+                    .entry(model.to_string())
+                    .or_insert((0, 0, 0.0));
+                model_entry.0 += input;
+                model_entry.1 += output;
+                model_entry.2 += cost;
+            }
+        }
+    }
+
+    metrics
+}
+
+#[tauri::command]
+fn get_usage_dashboard(interval: String) -> Result<UsageDashboard, String> {
+    let cutoff = parse_interval_cutoff(&interval);
+    let session_meta = load_session_meta_files();
+    let json_metrics = load_session_json_metrics();
+
+    let filtered_meta: Vec<SessionMetaFile> = session_meta
+        .into_iter()
+        .filter(|meta| {
+            if meta.first_prompt == "Unknown skill: usage" {
+                return false;
+            }
+            match (&cutoff, iso_date_prefix(&meta.start_time)) {
+                (Some(cutoff), Some(date)) => date >= *cutoff,
+                (Some(_), None) => false,
+                (None, _) => true,
+            }
+        })
+        .collect();
+
+    let mut daily_map = HashMap::<String, UsageDailyPoint>::new();
+    let mut model_map = HashMap::<String, UsageModelBreakdown>::new();
+    let mut project_map = HashMap::<String, UsageProjectBreakdown>::new();
+    let mut sessions = Vec::<UsageSessionBreakdown>::new();
+    let mut total_messages = 0u64;
+    let mut total_input_tokens = 0u64;
+    let mut total_output_tokens = 0u64;
+    let mut total_cost_usd = 0.0f64;
+    let mut total_tool_calls = 0u64;
+    let mut total_lines_added = 0u64;
+    let mut total_lines_removed = 0u64;
+    let mut total_files_modified = 0u64;
+    let mut active_days = std::collections::BTreeSet::<String>::new();
+
+    for meta in &filtered_meta {
+        let json = json_metrics.get(&meta.session_id).cloned().unwrap_or_default();
+        let input_tokens = if json.input_tokens > 0 { json.input_tokens } else { meta.input_tokens };
+        let output_tokens = if json.output_tokens > 0 { json.output_tokens } else { meta.output_tokens };
+        let total_tokens = input_tokens + output_tokens;
+        let messages = meta.user_message_count + meta.assistant_message_count;
+        let cost_usd = json.cost_usd;
+        let display_name = Path::new(&meta.project_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&meta.project_path)
+            .to_string();
+
+        total_messages += messages;
+        total_input_tokens += input_tokens;
+        total_output_tokens += output_tokens;
+        total_cost_usd += cost_usd;
+        total_lines_added += meta.lines_added;
+        total_lines_removed += meta.lines_removed;
+        total_files_modified += meta.files_modified;
+        total_tool_calls += meta.tool_counts.values().sum::<u64>();
+
+        if let Some(date) = iso_date_prefix(&meta.start_time) {
+            active_days.insert(date.clone());
+            let entry = daily_map.entry(date.clone()).or_insert(UsageDailyPoint {
+                date,
+                sessions: 0,
+                messages: 0,
+                total_tokens: 0,
+                cost_usd: 0.0,
+            });
+            entry.sessions += 1;
+            entry.messages += messages;
+            entry.total_tokens += total_tokens;
+            entry.cost_usd += cost_usd;
+        }
+
+        for (date, (tokens, cost)) in json.daily {
+            if let Some(cutoff) = cutoff.as_ref() {
+                if date < *cutoff {
+                    continue;
+                }
+            }
+            active_days.insert(date.clone());
+            let entry = daily_map.entry(date.clone()).or_insert(UsageDailyPoint {
+                date,
+                sessions: 0,
+                messages: 0,
+                total_tokens: 0,
+                cost_usd: 0.0,
+            });
+            entry.total_tokens += tokens;
+            entry.cost_usd += cost;
+        }
+
+        for (model, (input, output, cost)) in json.models {
+            let entry = model_map.entry(model.clone()).or_insert(UsageModelBreakdown {
+                model,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cost_usd: 0.0,
+                sessions: 0,
+            });
+            entry.input_tokens += input;
+            entry.output_tokens += output;
+            entry.total_tokens += input + output;
+            entry.cost_usd += cost;
+            entry.sessions += 1;
+        }
+
+        let project_entry = project_map
+            .entry(meta.project_path.clone())
+            .or_insert(UsageProjectBreakdown {
+                project_path: meta.project_path.clone(),
+                display_name: display_name.clone(),
+                sessions: 0,
+                messages: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cost_usd: 0.0,
+                lines_added: 0,
+                lines_removed: 0,
+                files_modified: 0,
+                last_active: meta.start_time.clone(),
+            });
+        project_entry.sessions += 1;
+        project_entry.messages += messages;
+        project_entry.input_tokens += input_tokens;
+        project_entry.output_tokens += output_tokens;
+        project_entry.total_tokens += total_tokens;
+        project_entry.cost_usd += cost_usd;
+        project_entry.lines_added += meta.lines_added;
+        project_entry.lines_removed += meta.lines_removed;
+        project_entry.files_modified += meta.files_modified;
+        if meta.start_time > project_entry.last_active {
+            project_entry.last_active = meta.start_time.clone();
+        }
+
+        sessions.push(UsageSessionBreakdown {
+            session_id: meta.session_id.clone(),
+            project_path: meta.project_path.clone(),
+            display_name,
+            start_time: meta.start_time.clone(),
+            duration_minutes: meta.duration_minutes,
+            user_messages: meta.user_message_count,
+            assistant_messages: meta.assistant_message_count,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost_usd,
+            first_prompt: meta.first_prompt.clone(),
+        });
+    }
+
+    let mut daily: Vec<UsageDailyPoint> = daily_map.into_values().collect();
+    daily.sort_by(|a, b| a.date.cmp(&b.date));
+
+    let mut models: Vec<UsageModelBreakdown> = model_map.into_values().collect();
+    models.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+
+    let mut projects: Vec<UsageProjectBreakdown> = project_map.into_values().collect();
+    projects.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+
+    sessions.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+
+    let total_sessions = sessions.len();
+    let summary = UsageSummary {
+        total_sessions,
+        total_messages,
+        total_input_tokens,
+        total_output_tokens,
+        total_tokens: total_input_tokens + total_output_tokens,
+        total_cost_usd,
+        total_tool_calls,
+        total_lines_added,
+        total_lines_removed,
+        total_files_modified,
+        active_days: active_days.len(),
+        avg_messages_per_session: if total_sessions == 0 {
+            0.0
+        } else {
+            total_messages as f64 / total_sessions as f64
+        },
+    };
+
+    Ok(UsageDashboard {
+        interval,
+        summary,
+        daily,
+        models,
+        projects,
+        sessions,
+    })
+}
+
+fn sanitize_terminal_output(raw: &str) -> String {
+    let ansi_re = Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").expect("ansi regex");
+    let osc_re = Regex::new(r"\x1b\][^\x07]*(?:\x07|\x1b\\)").expect("osc regex");
+    let mut text = osc_re.replace_all(raw, "").to_string();
+    text = ansi_re.replace_all(&text, "").to_string();
+    text = text
+        .chars()
+        .filter(|ch| *ch == '\n' || *ch == '\r' || *ch == '\t' || !ch.is_control())
+        .collect();
+    text = text.replace('\r', "");
+    text
+}
+
+fn extract_percent_and_reset(lines: &[String], label_patterns: &[&str]) -> ClaudePlanUsageBucket {
+    let percent_re = Regex::new(r"(?i)(\d{1,3}(?:\.\d+)?)\s*%").expect("percent regex");
+    let reset_re = Regex::new(r"(?i)reset(?:s|ting)?(?:\s+(?:in|at|on))?\s*[:\-]?\s*(.+)$")
+        .expect("reset regex");
+
+    for index in 0..lines.len() {
+        let line = &lines[index];
+        let normalized = line.to_lowercase();
+        if !label_patterns.iter().any(|pattern| normalized.contains(pattern)) {
+            continue;
+        }
+
+        let section_end = (index + 5).min(lines.len().saturating_sub(1));
+        let section = lines[index..=section_end].join(" ");
+        let percent_used = percent_re
+            .captures(&section)
+            .and_then(|captures| captures.get(1))
+            .and_then(|capture| capture.as_str().parse::<f64>().ok());
+
+        let reset_at = lines[index..=section_end]
+            .iter()
+            .find_map(|candidate| {
+                reset_re
+                    .captures(candidate)
+                    .and_then(|captures| captures.get(1))
+                    .map(|capture| capture.as_str().trim().trim_matches('.').to_string())
+            });
+
+        if percent_used.is_some() || reset_at.is_some() {
+            return ClaudePlanUsageBucket {
+                percent_used,
+                reset_at,
+            };
+        }
+    }
+
+    ClaudePlanUsageBucket::default()
+}
+
+fn parse_plan_usage(raw: &str) -> ClaudePlanUsage {
+    let sanitized = sanitize_terminal_output(raw);
+    let lines: Vec<String> = sanitized
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    ClaudePlanUsage {
+        current_session: extract_percent_and_reset(&lines, &["current session"]),
+        weekly_limits: extract_percent_and_reset(&lines, &["weekly limits", "weekly limit"]),
+        fetched_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64,
+        is_live: true,
+    }
+}
+
+fn fetch_plan_usage(workspace_path: String, session_id: Option<String>) -> Result<ClaudePlanUsage, String> {
+    let cwd = PathBuf::from(&workspace_path);
+    if !cwd.exists() || !cwd.is_dir() {
+        return Err("Workspace path does not exist".to_string());
+    }
+
+    let (claude_bin, full_path) = claude_binary_and_path();
+    let mut cmd = std::process::Command::new(&claude_bin);
+    cmd.current_dir(&cwd);
+    cmd.env("PATH", &full_path);
+    cmd.arg("--output-format").arg("json");
+    cmd.arg("-p").arg("/usage");
+    if let Some(session_id) = session_id.as_ref().filter(|value| !value.trim().is_empty()) {
+        cmd.arg("--resume");
+        cmd.arg(session_id);
+    }
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let payload = serde_json::from_str::<serde_json::Value>(&stdout)
+        .map_err(|_| "Unable to parse Claude /usage JSON response.".to_string())?;
+    let result_text = payload
+        .get("result")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let usage = parse_plan_usage(result_text);
+    if usage.current_session.percent_used.is_none()
+        && usage.current_session.reset_at.is_none()
+        && usage.weekly_limits.percent_used.is_none()
+        && usage.weekly_limits.reset_at.is_none()
+    {
+        return Err("Unable to parse Claude plan usage.".to_string());
+    }
+
+    Ok(usage)
 }
 
 // ─── Tauri commands ───────────────────────────────────────────────────────────
@@ -318,41 +922,7 @@ fn scan_existing_sessions() -> Vec<DiscoveredWorkspace> {
             }
             let dir_name = path.file_name()?.to_str()?.to_string();
             let (real_path, path_exists) = decode_project_path(&dir_name);
-
-            let decoded_path = real_path.to_string_lossy().to_string();
-            let display_name = real_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&decoded_path)
-                .to_string();
-
-            let mut sessions: Vec<DiscoveredSession> = fs::read_dir(&path)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter_map(|f| {
-                    let fp = f.path();
-                    if fp.extension()?.to_str()? != "jsonl" {
-                        return None;
-                    }
-                    Some(DiscoveredSession {
-                        id: fp.file_stem()?.to_str()?.to_string(),
-                        file_path: fp.to_string_lossy().to_string(),
-                        modified_at: modified_at_secs(&fp),
-                        first_message: read_first_message(&fp),
-                    })
-                })
-                .collect();
-
-            sessions.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
-
-            Some(DiscoveredWorkspace {
-                encoded_name: dir_name,
-                decoded_path,
-                display_name,
-                path_exists,
-                sessions,
-            })
+            Some(collect_workspace_from_project_dir(&path, dir_name, real_path, path_exists))
         })
         .collect();
 
@@ -365,6 +935,36 @@ fn scan_existing_sessions() -> Vec<DiscoveredWorkspace> {
     });
 
     workspaces
+}
+
+#[tauri::command]
+fn describe_workspace(workspace_path: String) -> DiscoveredWorkspace {
+    let real_path = PathBuf::from(&workspace_path);
+    let encoded_name = claude_encode(&workspace_path);
+    let project_dir = dirs_next::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/"))
+        .join(".claude")
+        .join("projects")
+        .join(&encoded_name);
+
+    if project_dir.exists() && project_dir.is_dir() {
+        return collect_workspace_from_project_dir(&project_dir, encoded_name, real_path.clone(), real_path.exists());
+    }
+
+    let decoded_path = real_path.to_string_lossy().to_string();
+    let display_name = real_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&decoded_path)
+        .to_string();
+
+    DiscoveredWorkspace {
+        encoded_name,
+        decoded_path,
+        display_name,
+        path_exists: real_path.exists(),
+        sessions: vec![],
+    }
 }
 
 #[tauri::command]
@@ -404,6 +1004,41 @@ fn get_claude_account_info() -> ClaudeAccountInfo {
         organization_name: get_str("organizationName"),
         organization_role: get_str("organizationRole"),
     }
+}
+
+#[tauri::command]
+fn get_claude_plan_usage(
+    cache: State<PlanUsageCache>,
+    workspace_path: String,
+    session_id: Option<String>,
+) -> Result<ClaudePlanUsage, String> {
+    let cache_key = format!(
+        "{}::{}",
+        workspace_path,
+        session_id.as_deref().unwrap_or("")
+    );
+    {
+        let cache_guard = cache
+            .entries
+            .lock()
+            .map_err(|_| "Plan usage cache lock poisoned".to_string())?;
+        if let Some(entry) = cache_guard.get(&cache_key) {
+            if entry.fetched_at.elapsed() < Duration::from_secs(60) {
+                return Ok(entry.usage.clone());
+            }
+        }
+    }
+
+    let usage = fetch_plan_usage(workspace_path.clone(), session_id)?;
+    let mut cache_guard = cache
+        .entries
+        .lock()
+        .map_err(|_| "Plan usage cache lock poisoned".to_string())?;
+    cache_guard.insert(cache_key, CachedPlanUsage {
+        usage: usage.clone(),
+        fetched_at: Instant::now(),
+    });
+    Ok(usage)
 }
 
 #[tauri::command]
@@ -895,10 +1530,9 @@ fn close_interactive_command(
 
 // ─── Send message ─────────────────────────────────────────────────────────────
 
-#[tauri::command]
-fn send_message(
+fn spawn_claude_message(
     app: AppHandle,
-    session_id: String,
+    session_id: Option<String>,
     cwd: String,
     message: String,
     model: String,
@@ -907,11 +1541,10 @@ fn send_message(
     std::thread::spawn(move || {
         let (claude_bin, full_path) = claude_binary_and_path();
 
-        eprintln!("[send_message] claude={} cwd={} session={}", claude_bin, cwd, session_id);
+        eprintln!("[send_message] claude={} cwd={} session={:?}", claude_bin, cwd, session_id);
 
         let mut cmd = std::process::Command::new(&claude_bin);
         cmd.arg("-p").arg(&message)
-           .arg("--resume").arg(&session_id)
            .arg("--output-format").arg("stream-json")
            .arg("--verbose")
            .arg("--include-partial-messages")
@@ -919,6 +1552,10 @@ fn send_message(
            .stdout(std::process::Stdio::piped())
            .stderr(std::process::Stdio::piped())
            .env("PATH", &full_path);
+
+        if let Some(session_id) = session_id.as_ref() {
+            cmd.arg("--resume").arg(session_id);
+        }
 
         if !model.is_empty() && model != "default" {
             cmd.arg("--model").arg(&model);
@@ -965,17 +1602,44 @@ fn send_message(
     Ok(())
 }
 
+#[tauri::command]
+fn send_message(
+    app: AppHandle,
+    session_id: String,
+    cwd: String,
+    message: String,
+    model: String,
+    effort: String,
+) -> Result<(), String> {
+    spawn_claude_message(app, Some(session_id), cwd, message, model, effort)
+}
+
+#[tauri::command]
+fn send_new_message(
+    app: AppHandle,
+    cwd: String,
+    message: String,
+    model: String,
+    effort: String,
+) -> Result<(), String> {
+    spawn_claude_message(app, None, cwd, message, model, effort)
+}
+
 // ─── App entry ────────────────────────────────────────────────────────────────
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(InteractiveSessionStore::default())
+        .manage(PlanUsageCache::default())
         .invoke_handler(tauri::generate_handler![
             scan_existing_sessions,
+            describe_workspace,
             delete_session_file,
             get_session_messages,
             get_claude_account_info,
+            get_claude_plan_usage,
+            get_usage_dashboard,
             get_workspace_favicon,
             get_workspace_files,
             get_workspace_slash_commands,
@@ -983,6 +1647,7 @@ pub fn run() {
             write_interactive_command,
             resize_interactive_command,
             close_interactive_command,
+            send_new_message,
             send_message
         ])
         .run(tauri::generate_context!())

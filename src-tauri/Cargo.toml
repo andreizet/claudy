@@ -22,3 +22,5 @@ walkdir = "2"
 dirs-next = "2"
 base64 = "0.22"
 portable-pty = "0.8"
+regex = "1"
+time = { version = "0.3", features = ["formatting", "parsing"] }

@@ -20,6 +20,77 @@ export interface ClaudeAccountInfo {
   organization_role: string | null;
 }
 
+export interface UsageSummary {
+  total_sessions: number;
+  total_messages: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  total_tool_calls: number;
+  total_lines_added: number;
+  total_lines_removed: number;
+  total_files_modified: number;
+  active_days: number;
+  avg_messages_per_session: number;
+}
+
+export interface UsageDailyPoint {
+  date: string;
+  sessions: number;
+  messages: number;
+  total_tokens: number;
+  cost_usd: number;
+}
+
+export interface UsageModelBreakdown {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  sessions: number;
+}
+
+export interface UsageProjectBreakdown {
+  project_path: string;
+  display_name: string;
+  sessions: number;
+  messages: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  lines_added: number;
+  lines_removed: number;
+  files_modified: number;
+  last_active: string;
+}
+
+export interface UsageSessionBreakdown {
+  session_id: string;
+  project_path: string;
+  display_name: string;
+  start_time: string;
+  duration_minutes: number;
+  user_messages: number;
+  assistant_messages: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  first_prompt: string;
+}
+
+export interface UsageDashboard {
+  interval: string;
+  summary: UsageSummary;
+  daily: UsageDailyPoint[];
+  models: UsageModelBreakdown[];
+  projects: UsageProjectBreakdown[];
+  sessions: UsageSessionBreakdown[];
+}
+
 // ─── JSONL message types ──────────────────────────────────────────────────────
 
 export interface ContentBlockText {

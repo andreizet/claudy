@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Box, Text, UnstyledButton } from "@mantine/core";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "./types";
 import HomeView from "./views/HomeView";
@@ -19,6 +19,7 @@ function createTabId(): string {
 }
 
 export default function App() {
+  const queryClient = useQueryClient();
   const initialTabId = useMemo(createTabId, []);
   const [tabs, setTabs] = useState<AppTab[]>([{ id: initialTabId, kind: "home" }]);
   const [activeTabId, setActiveTabId] = useState(initialTabId);
@@ -33,6 +34,30 @@ export default function App() {
     queryFn: () => invoke<ClaudeAccountInfo>("get_claude_account_info"),
   });
   const [favicons, setFavicons] = useState<Record<string, string | null>>({});
+
+  const openWorkspaceInNewTab = (workspace: DiscoveredWorkspace) => {
+    const id = createTabId();
+    setTabs([{ id, kind: "chat", workspace }]);
+    setActiveTabId(id);
+  };
+
+  const replaceActiveTabWithWorkspace = (workspace: DiscoveredWorkspace) => {
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.id === activeTabId ? { id: activeTabId, kind: "chat", workspace } : t
+      )
+    );
+  };
+
+  const handleCreateSession = async (workspacePath: string, replaceActive = false) => {
+    const workspace = await invoke<DiscoveredWorkspace>("describe_workspace", { workspacePath });
+    await queryClient.invalidateQueries({ queryKey: ["existing-sessions"] });
+    if (replaceActive) {
+      replaceActiveTabWithWorkspace(workspace);
+      return;
+    }
+    openWorkspaceInNewTab(workspace);
+  };
 
   useEffect(() => {
     try {
@@ -95,11 +120,8 @@ export default function App() {
           workspaces={workspaces}
           isLoading={isLoading}
           accountInfo={accountInfo}
-          onOpenWorkspace={(workspace) => {
-            const id = createTabId();
-            setTabs([{ id, kind: "chat", workspace }]);
-            setActiveTabId(id);
-          }}
+          onOpenWorkspace={openWorkspaceInNewTab}
+          onCreateSession={(workspacePath) => void handleCreateSession(workspacePath)}
         />
       </Box>
     );
@@ -255,13 +277,8 @@ export default function App() {
         isLoading={isLoading}
         accountInfo={accountInfo}
         mainHeader={tabHeader}
-        onOpenWorkspace={(workspace) =>
-          setTabs((prev) =>
-            prev.map((t) =>
-              t.id === activeTab.id ? { id: activeTab.id, kind: "chat", workspace } : t
-            )
-          )
-        }
+        onOpenWorkspace={replaceActiveTabWithWorkspace}
+        onCreateSession={(workspacePath) => void handleCreateSession(workspacePath, true)}
       />
     </Box>
   );

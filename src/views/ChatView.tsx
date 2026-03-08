@@ -105,6 +105,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [pendingUserMessage, setPendingUserMessage] = useState("");
   const [model, setModel] = useState("default");
   const [effort, setEffort] = useState("default");
   const [streaming, setStreaming] = useState(false);
@@ -123,6 +124,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
   const [interactiveOutput, setInteractiveOutput] = useState("");
   const [interactiveStarting, setInteractiveStarting] = useState(false);
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null);
+  const [creatingInitialSession, setCreatingInitialSession] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -143,6 +145,16 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
 
   const handlePinSession = (session: DiscoveredSession) => {
     persistPinnedSession(pinnedSessionId === session.id ? null : session.id);
+  };
+
+  const handleStartNewSession = () => {
+    setActiveSession(null);
+    setMessages([]);
+    setLoadingMessages(false);
+    setLoadingSessionId(null);
+    setInput("");
+    setStreamText("");
+    setStreaming(false);
   };
 
   const handleDeleteSession = async (session: DiscoveredSession) => {
@@ -359,10 +371,30 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
         }
       } catch {}
     });
-    const unlistenDone = listen("claude-done", () => {
+    const unlistenDone = listen("claude-done", async () => {
       setStreaming(false);
       setStreamText("");
-      if (activeSession) loadMessages(activeSession.file_path);
+      setPendingUserMessage("");
+      if (creatingInitialSession || !activeSession) {
+        try {
+          const refreshed = await invoke<DiscoveredWorkspace>("describe_workspace", {
+            workspacePath: workspace.decoded_path,
+          });
+          setSessionItems(refreshed.sessions);
+          const nextActive = refreshed.sessions[0] ?? null;
+          setActiveSession(nextActive);
+          if (nextActive) {
+            loadMessages(nextActive.file_path);
+          }
+          queryClient.invalidateQueries({ queryKey: ["existing-sessions"] }).catch(console.error);
+        } catch (error) {
+          console.error(error);
+        } finally {
+          setCreatingInitialSession(false);
+        }
+        return;
+      }
+      loadMessages(activeSession.file_path);
     });
     const unlistenError = listen<string>("claude-error", (e) => {
       console.error("claude error:", e.payload);
@@ -373,7 +405,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
       unlistenDone.then(f => f());
       unlistenError.then(f => f());
     };
-  }, [activeSession?.file_path]);
+  }, [activeSession?.file_path, creatingInitialSession, queryClient, workspace.decoded_path]);
 
   useEffect(() => {
     const unlistenOutput = listen<InteractiveEventPayload>("claudy://interactive-output", (event) => {
@@ -603,7 +635,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
 
   const handleSend = () => {
     const text = input.trim();
-    if ((!text && selectedFileRefs.length === 0) || !activeSession || streaming) return;
+    if ((!text && selectedFileRefs.length === 0) || streaming) return;
     if (text.startsWith("/") && selectedFileRefs.length === 0) {
       setInput("");
       setAutocompleteMode(null);
@@ -625,17 +657,31 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
     setAutocompleteIndex(0);
     setAutocompleteRange(null);
     setStreaming(true);
-    setStreamText("…");
-    invoke("send_message", {
-      sessionId: activeSession.id,
-      cwd: workspace.decoded_path,
-      message,
-      model,
-      effort,
-    }).catch((e) => {
+    setStreamText("");
+    setPendingUserMessage(message);
+    const command = activeSession
+      ? invoke("send_message", {
+          sessionId: activeSession.id,
+          cwd: workspace.decoded_path,
+          message,
+          model,
+          effort,
+        })
+      : (() => {
+          setCreatingInitialSession(true);
+          return invoke("send_new_message", {
+            cwd: workspace.decoded_path,
+            message,
+            model,
+            effort,
+          });
+        })();
+    command.catch((e) => {
       console.error(e);
       setStreaming(false);
       setStreamText("");
+      setPendingUserMessage("");
+      setCreatingInitialSession(false);
     });
   };
 
@@ -732,6 +778,31 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
             )}
           </Box>
         </ScrollArea>
+
+        <Box px={14} pb={14} pt={8} style={{ borderTop: "1px solid #1f1f23" }}>
+          <UnstyledButton
+            onClick={handleStartNewSession}
+            style={{
+              width: "100%",
+              height: 32,
+              borderRadius: 8,
+              border: "1px solid transparent",
+              background: "#f4f4f5",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              color: "#0c0c0f",
+              fontSize: 12,
+              fontWeight: 500,
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+            </svg>
+            <Text size="xs" inherit>New Session</Text>
+          </UnstyledButton>
+        </Box>
       </Box>
 
       {/* ── Main panel ── */}
@@ -750,13 +821,15 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
         {/* Messages */}
         {loadingMessages ? (
           <MessagesSkeleton />
-        ) : !activeSession ? (
+        ) : !activeSession && !streaming && !pendingUserMessage ? (
           <EmptyMessages />
         ) : (
           <MessageList
             messages={messages}
             streamText={streaming ? streamText : ""}
-            sessionId={activeSession.id}
+            showGenerating={streaming}
+            pendingUserText={streaming ? pendingUserMessage : ""}
+            sessionId={activeSession?.id}
             userAvatarUrl={userAvatarUrl}
           />
         )}
@@ -769,7 +842,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
             <EffortSelect value={effort} onChange={setEffort} />
           </Box>
           {/* Textarea row */}
-          <Box style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Box style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 40px", alignItems: "center", gap: 8 }}>
             <Box style={{ flex: 1, position: "relative" }}>
               <Box
                 style={{
@@ -941,37 +1014,39 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
                 </Box>
               ) : null}
             </Box>
-            <UnstyledButton
-              onClick={handleSend}
-              disabled={streaming || loadingMessages || (!input.trim() && selectedFileRefs.length === 0)}
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 8,
-                background: streaming || loadingMessages || (!input.trim() && selectedFileRefs.length === 0) ? "#27272a" : "#f4f4f5",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-                transition: "background 120ms",
-              }}
-            >
-              {streaming ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "#52525b" }}>
-                  <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
-                </svg>
-              ) : (
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  style={{ color: input.trim() || selectedFileRefs.length > 0 ? "#0c0c0f" : "#52525b" }}
-                >
-                  <path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              )}
-            </UnstyledButton>
+            <Box style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
+              <UnstyledButton
+                onClick={handleSend}
+                disabled={streaming || loadingMessages || (!input.trim() && selectedFileRefs.length === 0)}
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 8,
+                  background: streaming || loadingMessages || (!input.trim() && selectedFileRefs.length === 0) ? "#27272a" : "#f4f4f5",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                  transition: "background 120ms",
+                }}
+              >
+                {streaming ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "#52525b" }}>
+                    <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
+                  </svg>
+                ) : (
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    style={{ color: input.trim() || selectedFileRefs.length > 0 ? "#0c0c0f" : "#52525b" }}
+                  >
+                    <path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
+              </UnstyledButton>
+            </Box>
           </Box>
         </Box>
 

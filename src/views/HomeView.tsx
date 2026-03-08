@@ -5,8 +5,10 @@ import ProjectListItem from "../components/ProjectListItem";
 import sidebarTitle from "../assets/sidebar-title.svg";
 import { md5 } from "../shared/md5";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import UsageDashboardView from "./UsageDashboardView";
 
-type NavItem = "projects" | "favorites";
+type NavItem = "projects" | "favorites" | "usage";
 const FAVORITES_STORAGE_KEY = "claudy.favoriteWorkspaces";
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 
@@ -27,10 +29,11 @@ interface Props {
   isLoading: boolean;
   accountInfo: ClaudeAccountInfo | null;
   onOpenWorkspace: (workspace: DiscoveredWorkspace) => void;
+  onCreateSession: (workspacePath: string) => void;
   mainHeader?: React.ReactNode;
 }
 
-export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWorkspace, mainHeader }: Props) {
+export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWorkspace, onCreateSession, mainHeader }: Props) {
   const [activeNav, setActiveNav] = useState<NavItem>("projects");
   const [search, setSearch] = useState("");
   const [favorites, setFavorites] = useState<Set<string>>(loadFavoriteWorkspaces);
@@ -165,11 +168,15 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
           <NavButton active={activeNav === "favorites"} onClick={() => setActiveNav("favorites")}>
             Favorites
           </NavButton>
+          <NavButton active={activeNav === "usage"} onClick={() => setActiveNav("usage")}>
+            Usage
+          </NavButton>
         </Stack>
 
         {/* Settings */}
         <Box px={14} pb={18}>
           <UnstyledButton
+            onClick={() => setActiveNav("usage")}
             style={{
               display: "flex",
               alignItems: "center",
@@ -196,90 +203,119 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
       <Box style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {mainHeader}
         {/* Top bar */}
-        <Box
-          px={20}
-          style={{
-            height: 52,
-            display: "flex",
-            alignItems: "center",
-            gap: 16,
-            borderBottom: "1px solid #1f1f23",
-            flexShrink: 0,
-          }}
-        >
-          <Group gap={6} style={{ flex: 1, maxWidth: 300 }}>
-            <SearchIcon />
-            <TextInput
-              placeholder="Search projects"
-              value={search}
-              onChange={(e) => setSearch(e.currentTarget.value)}
-              variant="unstyled"
-              style={{ flex: 1 }}
-              styles={{
-                input: {
-                  color: "#d4d4d8",
-                  fontSize: 13,
-                  padding: 0,
-                  height: "auto",
-                  minHeight: "auto",
-                  lineHeight: 1.5,
-                },
-              }}
-            />
-          </Group>
-
-          <Button
-            ml="auto"
-            size="xs"
-            leftSection={<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>}
-            styles={{
-              root: {
-                background: "#f4f4f5",
-                color: "#0c0c0f",
-                fontSize: 12,
-                fontWeight: 500,
-                height: 28,
-                padding: "0 12px",
-                border: "none",
-                "&:hover": { background: "#e4e4e7" },
-              },
+        {activeNav !== "usage" ? (
+          <Box
+            px={20}
+            style={{
+              height: 52,
+              display: "flex",
+              alignItems: "center",
+              gap: 16,
+              borderBottom: "1px solid #1f1f23",
+              flexShrink: 0,
             }}
           >
-            New Session
-          </Button>
-        </Box>
+            <Group gap={6} style={{ flex: 1, maxWidth: 300 }}>
+              <SearchIcon />
+              <TextInput
+                placeholder="Search projects"
+                value={search}
+                onChange={(e) => setSearch(e.currentTarget.value)}
+                variant="unstyled"
+                style={{ flex: 1 }}
+                styles={{
+                  input: {
+                    color: "#d4d4d8",
+                    fontSize: 13,
+                    padding: 0,
+                    height: "auto",
+                    minHeight: "auto",
+                    lineHeight: 1.5,
+                  },
+                }}
+              />
+            </Group>
+
+            <Button
+              ml="auto"
+              size="xs"
+              onClick={async () => {
+                const selected = await open({
+                  directory: true,
+                  multiple: false,
+                  title: "Choose project folder",
+                });
+                if (typeof selected === "string" && selected) {
+                  onCreateSession(selected);
+                }
+              }}
+              leftSection={<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>}
+              styles={{
+                root: {
+                  background: "#f4f4f5",
+                  color: "#0c0c0f",
+                  fontSize: 12,
+                  fontWeight: 500,
+                  height: 28,
+                  padding: "0 12px",
+                  border: "none",
+                  "&:hover": { background: "#e4e4e7" },
+                },
+              }}
+            >
+              New Session
+            </Button>
+          </Box>
+        ) : (
+          <Box
+            px={20}
+            style={{
+              height: 52,
+              display: "flex",
+              alignItems: "center",
+              borderBottom: "1px solid #1f1f23",
+              flexShrink: 0,
+            }}
+          >
+            <Text size="sm" fw={600} c="#e4e4e7">Claude Usage</Text>
+          </Box>
+        )}
 
         {/* Project list */}
-        <ScrollArea style={{ flex: 1 }}>
-          {isLoading ? (
-            <LoadingSkeleton />
-          ) : listed.length === 0 ? (
-            <EmptyState activeNav={activeNav} hasSearch={!!search} />
-          ) : (
-            <Box>
-              {listed.map((w) => (
-                <ProjectListItem
-                  key={w.encoded_name}
-                  workspace={w}
-                  faviconDataUrl={favicons[w.encoded_name] ?? null}
-                  isFavorite={favorites.has(w.encoded_name)}
-                  onToggleFavorite={() =>
-                    setFavorites((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(w.encoded_name)) {
-                        next.delete(w.encoded_name);
-                      } else {
-                        next.add(w.encoded_name);
-                      }
-                      return next;
-                    })
-                  }
-                  onClick={() => w.path_exists && onOpenWorkspace(w)}
-                />
-              ))}
-            </Box>
-          )}
-        </ScrollArea>
+        {activeNav === "usage" ? (
+          <UsageDashboardView />
+        ) : (
+          <ScrollArea style={{ flex: 1 }}>
+            {isLoading ? (
+              <LoadingSkeleton />
+            ) : listed.length === 0 ? (
+              <EmptyState activeNav={activeNav} hasSearch={!!search} />
+            ) : (
+              <Box>
+                {listed.map((w) => (
+                  <ProjectListItem
+                    key={w.encoded_name}
+                    workspace={w}
+                    faviconDataUrl={favicons[w.encoded_name] ?? null}
+                    isFavorite={favorites.has(w.encoded_name)}
+                    onToggleFavorite={() =>
+                      setFavorites((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(w.encoded_name)) {
+                          next.delete(w.encoded_name);
+                        } else {
+                          next.add(w.encoded_name);
+                        }
+                        return next;
+                      })
+                    }
+                    onClick={() => w.path_exists && onOpenWorkspace(w)}
+                  />
+                ))}
+              </Box>
+            )}
+          </ScrollArea>
+        )}
         <Box
           px={20}
           py={12}
@@ -406,6 +442,8 @@ function EmptyState({
           ? "No projects match your search"
           : activeNav === "favorites"
           ? "No favorites yet"
+          : activeNav === "usage"
+          ? "No usage data available"
           : "No Claude Code sessions found in ~/.claude/projects/"}
       </Text>
     </Box>

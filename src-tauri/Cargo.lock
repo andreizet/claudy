@@ -304,11 +304,13 @@ dependencies = [
  "base64 0.22.1",
  "dirs-next",
  "portable-pty",
+ "regex",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "time",
  "walkdir",
 ]
 
