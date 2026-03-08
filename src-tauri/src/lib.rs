@@ -267,6 +267,26 @@ fn fuzzy_find(base: &Path, tokens: &[String]) -> Option<PathBuf> {
     None
 }
 
+fn decode_project_path_fallback(encoded_dir_name: &str) -> PathBuf {
+    let naive = encoded_dir_name.trim_start_matches('-').replace('-', "/");
+
+    #[cfg(windows)]
+    {
+        let mut parts = naive.split('/').filter(|part| !part.is_empty());
+        if let Some(drive) = parts.next() {
+            if drive.len() == 1 && drive.chars().all(|c| c.is_ascii_alphabetic()) {
+                let rest = parts.collect::<Vec<_>>().join("\\");
+                if rest.is_empty() {
+                    return PathBuf::from(format!("{}:\\", drive.to_ascii_uppercase()));
+                }
+                return PathBuf::from(format!("{}:\\{}", drive.to_ascii_uppercase(), rest));
+            }
+        }
+    }
+
+    PathBuf::from(format!("/{}", naive))
+}
+
 fn decode_project_path_with_home(encoded_dir_name: &str, home: &Path) -> (PathBuf, bool) {
     let home_str = home.to_string_lossy();
     let home_encoded = claude_encode(&home_str);
@@ -283,9 +303,21 @@ fn decode_project_path_with_home(encoded_dir_name: &str, home: &Path) -> (PathBu
         }
     }
 
+    #[cfg(windows)]
+    {
+        let tokens = alphanumeric_tokens(encoded_dir_name);
+        if let Some(drive) = tokens.first() {
+            if drive.len() == 1 && drive.chars().all(|c| c.is_ascii_alphabetic()) {
+                let drive_root = PathBuf::from(format!("{}:\\", drive.to_ascii_uppercase()));
+                if let Some(real_path) = fuzzy_find(&drive_root, &tokens[1..]) {
+                    return (real_path, true);
+                }
+            }
+        }
+    }
+
     // Fallback: naive replace (works for paths without special chars)
-    let naive = encoded_dir_name.trim_start_matches('-').replace('-', "/");
-    let naive_path = PathBuf::from(format!("/{}", naive));
+    let naive_path = decode_project_path_fallback(encoded_dir_name);
     let exists = naive_path.exists();
     (naive_path, exists)
 }
@@ -297,6 +329,10 @@ fn decode_project_path(encoded_dir_name: &str) -> (PathBuf, bool) {
     };
 
     decode_project_path_with_home(encoded_dir_name, &home)
+}
+
+fn path_contains_component(path: &Path, component: &str) -> bool {
+    path.components().any(|part| part.as_os_str().to_string_lossy().eq_ignore_ascii_case(component))
 }
 
 // ─── Session reading ──────────────────────────────────────────────────────────
@@ -394,21 +430,62 @@ fn collect_workspace_from_project_dir(
 
 fn claude_binary_and_path() -> (String, String) {
     let home = dirs_next::home_dir().unwrap_or_default();
-    let full_path = format!(
-        "{}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
-        home.to_string_lossy()
-    );
+    let path_separator = if cfg!(windows) { ";" } else { ":" };
+    let mut path_entries = Vec::<String>::new();
 
+    if let Ok(existing_path) = std::env::var("PATH") {
+        path_entries.push(existing_path);
+    }
+
+    #[cfg(windows)]
+    {
+        path_entries.push(home.join("AppData").join("Roaming").join("npm").to_string_lossy().to_string());
+        path_entries.push(home.join(".cargo").join("bin").to_string_lossy().to_string());
+    }
+
+    #[cfg(not(windows))]
+    {
+        path_entries.push(home.join(".local").join("bin").to_string_lossy().to_string());
+        path_entries.push("/usr/local/bin".to_string());
+        path_entries.push("/opt/homebrew/bin".to_string());
+        path_entries.push("/usr/bin".to_string());
+        path_entries.push("/bin".to_string());
+    }
+
+    let full_path = path_entries
+        .into_iter()
+        .filter(|entry| !entry.is_empty())
+        .collect::<Vec<_>>()
+        .join(path_separator);
+
+    #[cfg(windows)]
     let candidates = [
-        format!("{}/.local/bin/claude", home.to_string_lossy()),
+        home.join("AppData").join("Roaming").join("npm").join("claude.cmd").to_string_lossy().to_string(),
+        home.join("AppData").join("Roaming").join("npm").join("claude").to_string_lossy().to_string(),
+        "claude.cmd".to_string(),
+        "claude.exe".to_string(),
+        "claude".to_string(),
+    ];
+
+    #[cfg(not(windows))]
+    let candidates = [
+        home.join(".local").join("bin").join("claude").to_string_lossy().to_string(),
         "/usr/local/bin/claude".to_string(),
         "/opt/homebrew/bin/claude".to_string(),
+        "claude".to_string(),
     ];
+
     let claude_bin = candidates
         .iter()
         .find(|p| Path::new(p.as_str()).exists())
         .cloned()
-        .unwrap_or_else(|| "claude".to_string());
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "claude.cmd".to_string()
+            } else {
+                "claude".to_string()
+            }
+        });
 
     (claude_bin, full_path)
 }
@@ -476,7 +553,7 @@ fn load_session_json_metrics_from(root: &Path) -> HashMap<String, SessionJsonMet
         if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
             continue;
         }
-        if path.to_string_lossy().contains("/subagents/") {
+        if path_contains_component(path, "subagents") {
             continue;
         }
 
@@ -939,6 +1016,12 @@ fn scan_existing_sessions_in(claude_projects_dir: &Path, home: &Path) -> Vec<Dis
             }
             let dir_name = path.file_name()?.to_str()?.to_string();
             let (real_path, path_exists) = decode_project_path_with_home(&dir_name, home);
+            eprintln!(
+                "[scan_existing_sessions] encoded={} decoded={} exists={}",
+                dir_name,
+                real_path.to_string_lossy(),
+                path_exists
+            );
             Some(collect_workspace_from_project_dir(&path, dir_name, real_path, path_exists))
         })
         .collect();
@@ -1735,6 +1818,52 @@ mod tests {
         assert_eq!(workspaces[0].sessions[0].first_message.as_deref(), Some("Hello Claudy"));
 
         let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn fallback_decoder_preserves_windows_drive_paths() {
+        let decoded = decode_project_path_fallback("-E--chatbot-projects-insights");
+        let decoded_str = decoded.to_string_lossy().to_string();
+
+        #[cfg(windows)]
+        assert_eq!(decoded_str, r"E:\chatbot\projects\insights");
+
+        #[cfg(not(windows))]
+        assert_eq!(decoded_str, "/E//chatbot/projects/insights");
+    }
+
+    #[test]
+    fn path_component_match_is_separator_agnostic() {
+        assert!(path_contains_component(Path::new("/tmp/subagents/session.jsonl"), "subagents"));
+        assert!(path_contains_component(Path::new(r"C:\tmp\subagents\session.jsonl"), "subagents"));
+        assert!(!path_contains_component(Path::new(r"C:\tmp\agents\session.jsonl"), "subagents"));
+    }
+
+    #[test]
+    fn decode_project_path_uses_windows_drive_root_fuzzy_matching() {
+        let drive_root = temp_test_dir();
+        let drive_name = drive_root.file_name().and_then(|name| name.to_str()).unwrap().to_string();
+        let project = drive_root
+            .join("chatbot-projects")
+            .join("insights")
+            .join("tmp")
+            .join("cd44e875-4020-48d1-9e8e-47920f972ca8");
+        fs::create_dir_all(&project).unwrap();
+
+        let encoded = format!(
+            "{}-chatbot-projects-insights-tmp-cd44e875-4020-48d1-9e8e-47920f972ca8",
+            drive_name
+        );
+        let (decoded, exists) = decode_project_path_with_home(&encoded, Path::new(r"C:\Users\tester"));
+
+        if cfg!(windows) {
+            assert!(exists);
+            assert_eq!(decoded, project);
+        } else {
+            assert!(!exists);
+        }
+
+        let _ = fs::remove_dir_all(drive_root);
     }
 
     #[test]

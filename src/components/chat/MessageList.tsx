@@ -834,6 +834,8 @@ function extractToolDetail(block: ContentBlockToolUse): string | null {
 function shortenPath(p: string): string {
   const home = p.match(/^\/(?:Users|home)\/[^/]+/)?.[0];
   if (home) return "~" + p.slice(home.length);
+  const windowsHome = p.match(/^[A-Za-z]:\\Users\\[^\\]+/i)?.[0];
+  if (windowsHome) return "~" + p.slice(windowsHome.length).replace(/\\/g, "/");
   return p;
 }
 

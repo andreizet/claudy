@@ -39,6 +39,8 @@ function initials(name: string): string {
 function shortenPath(fullPath: string): string {
   const home = fullPath.match(/^\/(?:Users|home)\/[^/]+/)?.[0];
   if (home) return "~" + fullPath.slice(home.length);
+  const windowsHome = fullPath.match(/^[A-Za-z]:\\Users\\[^\\]+/i)?.[0];
+  if (windowsHome) return "~" + fullPath.slice(windowsHome.length).replace(/\\/g, "/");
   return fullPath;
 }
 
