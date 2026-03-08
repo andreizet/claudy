@@ -10,6 +10,7 @@ interface Props {
   workspace: DiscoveredWorkspace;
   accountInfo: ClaudeAccountInfo | null;
   onBack: () => void;
+  mainHeader?: React.ReactNode;
 }
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 
@@ -43,7 +44,7 @@ function modelFromHistory(records: JsonlRecord[]): string {
   return "default";
 }
 
-export default function ChatView({ workspace, accountInfo, onBack }: Props) {
+export default function ChatView({ workspace, accountInfo, onBack, mainHeader }: Props) {
   const sessions = workspace.sessions;
   const [activeSession, setActiveSession] = useState<DiscoveredSession | null>(
     sessions[0] ?? null
@@ -264,6 +265,7 @@ export default function ChatView({ workspace, accountInfo, onBack }: Props) {
 
       {/* ── Main panel ── */}
       <Box style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        {mainHeader}
         {/* Top bar */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr auto", alignItems: "center", gap: 12, padding: "0 24px", height: 52, borderBottom: "1px solid #1f1f23", flexShrink: 0 }}>
           <div style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", fontSize: 14, fontWeight: 500, color: "#e4e4e7", maxWidth: 500 }}>
@@ -296,7 +298,7 @@ export default function ChatView({ workspace, accountInfo, onBack }: Props) {
             <EffortSelect value={effort} onChange={setEffort} />
           </Box>
           {/* Textarea row */}
-          <Box style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+          <Box style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <textarea
               ref={textareaRef}
               value={input}

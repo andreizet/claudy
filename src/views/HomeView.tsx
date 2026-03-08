@@ -15,9 +15,10 @@ interface Props {
   isLoading: boolean;
   accountInfo: ClaudeAccountInfo | null;
   onOpenWorkspace: (workspace: DiscoveredWorkspace) => void;
+  mainHeader?: React.ReactNode;
 }
 
-export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWorkspace }: Props) {
+export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWorkspace, mainHeader }: Props) {
   const [activeNav, setActiveNav] = useState<NavItem>("projects");
   const [search, setSearch] = useState("");
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
@@ -117,7 +118,7 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
     <Box
       style={{
         display: "flex",
-        height: "100vh",
+        height: "100%",
         background: "#0c0c0f",
         color: "#f4f4f5",
       }}
@@ -194,6 +195,7 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
 
       {/* ── Main content ── */}
       <Box style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        {mainHeader}
         {/* Top bar */}
         <Box
           px={20}
