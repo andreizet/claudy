@@ -23,6 +23,10 @@ import toml from "react-syntax-highlighter/dist/esm/languages/prism/toml";
 import markdown from "react-syntax-highlighter/dist/esm/languages/prism/markdown";
 import { JsonlRecord, ContentBlock, ContentBlockToolUse, ContentBlockToolResult } from "../../types";
 
+const DEFAULT_MESSAGE_HEIGHT = 220;
+const DEFAULT_STREAM_HEIGHT = 120;
+const VIRTUAL_OVERSCAN = 6;
+
 SyntaxHighlighter.registerLanguage("tsx", tsx);
 SyntaxHighlighter.registerLanguage("typescript", typescript);
 SyntaxHighlighter.registerLanguage("javascript", javascript);
@@ -47,33 +51,75 @@ interface Props {
 }
 
 export default function MessageList({ messages, streamText, sessionId, userAvatarUrl }: Props) {
-  const bottomRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const [atTop, setAtTop] = useState(true);
   const [atBottom, setAtBottom] = useState(true);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const [itemHeights, setItemHeights] = useState<Record<number, number>>({});
+  const prevItemCountRef = useRef(messages.length + (streamText ? 1 : 0));
 
   const refreshScrollState = () => {
     const el = viewportRef.current;
     if (!el) return;
     const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
     const top = el.scrollTop;
+    setScrollTop(top);
+    setViewportHeight(el.clientHeight);
     setAtTop(top <= 1);
     setAtBottom(maxTop - top <= 1);
   };
 
+  const items: Array<
+    | { key: string; kind: "message"; record: JsonlRecord }
+    | { key: string; kind: "stream"; text: string }
+  > = [
+    ...messages.map((record, index) => ({
+      key: `${sessionId ?? "session"}-message-${index}`,
+      kind: "message" as const,
+      record,
+    })),
+    ...(streamText ? [{ key: `${sessionId ?? "session"}-stream`, kind: "stream" as const, text: streamText }] : []),
+  ];
+
+  const offsets: number[] = new Array(items.length);
+  let totalHeight = 0;
+  for (let i = 0; i < items.length; i += 1) {
+    offsets[i] = totalHeight;
+    totalHeight += itemHeights[i] ?? (items[i].kind === "stream" ? DEFAULT_STREAM_HEIGHT : DEFAULT_MESSAGE_HEIGHT);
+  }
+
+  const startIndex = Math.max(0, findVisibleIndex(offsets, scrollTop) - VIRTUAL_OVERSCAN);
+  const endIndex = Math.min(
+    items.length,
+    findVisibleEndIndex(offsets, itemHeights, items, scrollTop + viewportHeight) + VIRTUAL_OVERSCAN
+  );
+  const visibleItems = items.slice(startIndex, endIndex);
+
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView({ behavior: "auto" });
+      const el = viewportRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
       refreshScrollState();
     });
     return () => cancelAnimationFrame(frame);
   }, [sessionId]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-    const frame = requestAnimationFrame(refreshScrollState);
+    const frame = requestAnimationFrame(() => {
+      const el = viewportRef.current;
+      if (!el) return;
+      const itemCount = items.length;
+      const messageCountIncreased = itemCount > prevItemCountRef.current;
+      if (messageCountIncreased && atBottom) {
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      }
+      refreshScrollState();
+      prevItemCountRef.current = itemCount;
+    });
     return () => cancelAnimationFrame(frame);
-  }, [messages.length]);
+  }, [items.length, atBottom]);
 
   useEffect(() => {
     const el = viewportRef.current;
@@ -82,6 +128,48 @@ export default function MessageList({ messages, streamText, sessionId, userAvata
     refreshScrollState();
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
+  }, [sessionId]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const el = viewportRef.current;
+      if (!el) return;
+
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isEditable =
+        tag === "input"
+        || tag === "textarea"
+        || tag === "select"
+        || target?.isContentEditable;
+      if (isEditable) return;
+
+      if (event.key === "PageUp") {
+        event.preventDefault();
+        el.scrollBy({ top: -Math.max(120, el.clientHeight * 0.85), behavior: "auto" });
+        return;
+      }
+
+      if (event.key === "PageDown") {
+        event.preventDefault();
+        el.scrollBy({ top: Math.max(120, el.clientHeight * 0.85), behavior: "auto" });
+        return;
+      }
+
+      if (event.key === "Home") {
+        event.preventDefault();
+        el.scrollTo({ top: 0, behavior: "auto" });
+        return;
+      }
+
+      if (event.key === "End") {
+        event.preventDefault();
+        el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, [sessionId]);
 
   // Build a map of tool_use_id → result for expanding tool cards
@@ -112,20 +200,27 @@ export default function MessageList({ messages, streamText, sessionId, userAvata
   return (
     <Box style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
     <ScrollArea h="100%" viewportRef={viewportRef}>
-      <Box style={{ padding: "24px 32px", display: "flex", flexDirection: "column", gap: 4 }}>
-        {messages.map((record, i) => (
-          <MessageItem key={i} record={record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />
-        ))}
-        {streamText && (
-          <Box style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-            <AssistantText text={streamText} />
-            <Box style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <Box style={{ width: 6, height: 6, borderRadius: "50%", background: "#3f3f46", animation: "pulse 1s infinite" }} />
-              <Text size="xs" c="#3f3f46">Generating…</Text>
-            </Box>
-          </Box>
-        )}
-        <div ref={bottomRef} />
+      <Box style={{ padding: "24px 32px" }}>
+        <Box style={{ height: totalHeight, position: "relative" }}>
+          {visibleItems.map((item, index) => {
+            const actualIndex = startIndex + index;
+            return (
+              <MeasuredItem
+                key={item.key}
+                top={offsets[actualIndex]}
+                onHeightChange={(height) => {
+                  setItemHeights((current) => (current[actualIndex] === height ? current : { ...current, [actualIndex]: height }));
+                }}
+              >
+                {item.kind === "message" ? (
+                  <MessageItem record={item.record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />
+                ) : (
+                  <StreamingItem text={item.text} />
+                )}
+              </MeasuredItem>
+            );
+          })}
+        </Box>
       </Box>
     </ScrollArea>
 
@@ -136,6 +231,78 @@ export default function MessageList({ messages, streamText, sessionId, userAvata
       disableTop={atTop}
       disableBottom={atBottom}
     />
+    </Box>
+  );
+}
+
+function findVisibleIndex(offsets: number[], target: number): number {
+  let low = 0;
+  let high = offsets.length - 1;
+  let answer = 0;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (offsets[mid] <= target) {
+      answer = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return answer;
+}
+
+function findVisibleEndIndex(
+  offsets: number[],
+  itemHeights: Record<number, number>,
+  items: Array<{ kind: "message" | "stream" }>,
+  targetBottom: number
+): number {
+  let index = findVisibleIndex(offsets, targetBottom);
+  while (
+    index < items.length
+    && offsets[index] + (itemHeights[index] ?? (items[index].kind === "stream" ? DEFAULT_STREAM_HEIGHT : DEFAULT_MESSAGE_HEIGHT)) < targetBottom
+  ) {
+    index += 1;
+  }
+  return Math.min(items.length, index + 1);
+}
+
+function MeasuredItem({
+  top,
+  onHeightChange,
+  children,
+}: {
+  top: number;
+  onHeightChange: (height: number) => void;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => onHeightChange(el.getBoundingClientRect().height);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [onHeightChange]);
+
+  return (
+    <Box ref={ref} style={{ position: "absolute", top, left: 0, right: 0 }}>
+      {children}
+    </Box>
+  );
+}
+
+function StreamingItem({ text }: { text: string }) {
+  return (
+    <Box style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+      <AssistantText text={text} />
+      <Box style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <Box style={{ width: 6, height: 6, borderRadius: "50%", background: "#3f3f46", animation: "pulse 1s infinite" }} />
+        <Text size="xs" c="#3f3f46">Generating…</Text>
+      </Box>
     </Box>
   );
 }

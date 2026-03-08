@@ -10,6 +10,18 @@ type NavItem = "projects" | "favorites";
 const FAVORITES_STORAGE_KEY = "claudy.favoriteWorkspaces";
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 
+function loadFavoriteWorkspaces(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(FAVORITES_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((v): v is string => typeof v === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
 interface Props {
   workspaces: DiscoveredWorkspace[];
   isLoading: boolean;
@@ -21,21 +33,8 @@ interface Props {
 export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWorkspace, mainHeader }: Props) {
   const [activeNav, setActiveNav] = useState<NavItem>("projects");
   const [search, setSearch] = useState("");
-  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [favorites, setFavorites] = useState<Set<string>>(loadFavoriteWorkspaces);
   const [favicons, setFavicons] = useState<Record<string, string | null>>({});
-
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(FAVORITES_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return;
-      const values = parsed.filter((v): v is string => typeof v === "string");
-      setFavorites(new Set(values));
-    } catch {
-      // Ignore malformed local storage values.
-    }
-  }, []);
 
   useEffect(() => {
     window.localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(Array.from(favorites)));

@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { Box, Text, ScrollArea, UnstyledButton, Group, Skeleton } from "@mantine/core";
+import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import { ClaudeAccountInfo, DiscoveredWorkspace, DiscoveredSession, JsonlRecord } from "../types";
 import MessageList from "../components/chat/MessageList";
 import { md5 } from "../shared/md5";
@@ -13,12 +16,41 @@ interface Props {
   mainHeader?: React.ReactNode;
 }
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
+const PINNED_SESSION_STORAGE_KEY = "claudy.pinnedSessions";
+const BUILTIN_SLASH_COMMANDS: SlashCommandOption[] = [
+  { name: "add-dir", description: "Add additional working directories.", source: "builtin" },
+  { name: "agents", description: "Manage custom AI subagents.", source: "builtin" },
+  { name: "bug", description: "Report bugs to Anthropic.", source: "builtin" },
+  { name: "clear", description: "Clear conversation history.", source: "builtin" },
+  { name: "compact", description: "Compact conversation with optional focus instructions.", argument_hint: "[instructions]", source: "builtin" },
+  { name: "config", description: "View or modify Claude Code configuration.", source: "builtin" },
+  { name: "cost", description: "Show token usage statistics.", source: "builtin" },
+  { name: "doctor", description: "Check Claude Code installation health.", source: "builtin" },
+  { name: "help", description: "Show usage help.", source: "builtin" },
+  { name: "init", description: "Initialize project guidance with CLAUDE.md.", source: "builtin" },
+  { name: "login", description: "Switch Anthropic accounts.", source: "builtin" },
+  { name: "logout", description: "Sign out from your Anthropic account.", source: "builtin" },
+  { name: "mcp", description: "Manage MCP server connections and OAuth auth.", source: "builtin" },
+  { name: "memory", description: "Edit CLAUDE.md memory files.", source: "builtin" },
+  { name: "model", description: "Select or change the AI model.", source: "builtin" },
+  { name: "permissions", description: "View or update permissions.", source: "builtin" },
+  { name: "pr_comments", description: "View pull request comments.", source: "builtin" },
+  { name: "review", description: "Run a code review flow.", source: "builtin" },
+  { name: "status", description: "Show session and environment status.", source: "builtin" },
+  { name: "terminal-setup", description: "Install terminal key bindings and shell integration.", source: "builtin" },
+  { name: "vim", description: "Toggle or configure Vim mode.", source: "builtin" },
+];
 
 interface SlashCommandOption {
   name: string;
   description?: string;
   argument_hint?: string;
   source: string;
+}
+
+interface InteractiveEventPayload {
+  session_id: string;
+  data: string;
 }
 
 function shortenPath(fullPath: string): string {
@@ -65,10 +97,10 @@ function findActiveTrigger(value: string, caret: number) {
 }
 
 export default function ChatView({ workspace, accountInfo, onBack, mainHeader }: Props) {
-  const sessions = workspace.sessions;
-  const [activeSession, setActiveSession] = useState<DiscoveredSession | null>(
-    sessions[0] ?? null
-  );
+  const queryClient = useQueryClient();
+  const [sessionItems, setSessionItems] = useState<DiscoveredSession[]>(workspace.sessions);
+  const [activeSession, setActiveSession] = useState<DiscoveredSession | null>(workspace.sessions[0] ?? null);
+  const [pinnedSessionId, setPinnedSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<JsonlRecord[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
@@ -86,7 +118,106 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
   const [autocompleteOpen, setAutocompleteOpen] = useState(false);
   const [autocompleteIndex, setAutocompleteIndex] = useState(0);
   const [autocompleteRange, setAutocompleteRange] = useState<{ start: number; end: number } | null>(null);
+  const [interactiveSessionId, setInteractiveSessionId] = useState<string | null>(null);
+  const [interactiveVisible, setInteractiveVisible] = useState(false);
+  const [interactiveOutput, setInteractiveOutput] = useState("");
+  const [interactiveStarting, setInteractiveStarting] = useState(false);
+  const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const terminalContainerRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const interactiveWrittenLengthRef = useRef(0);
+
+  const persistPinnedSession = (sessionId: string | null) => {
+    setPinnedSessionId(sessionId);
+    try {
+      const raw = window.localStorage.getItem(PINNED_SESSION_STORAGE_KEY);
+      const parsed = raw ? (JSON.parse(raw) as Record<string, string | null>) : {};
+      parsed[workspace.encoded_name] = sessionId;
+      window.localStorage.setItem(PINNED_SESSION_STORAGE_KEY, JSON.stringify(parsed));
+    } catch {
+      // Ignore storage errors.
+    }
+  };
+
+  const handlePinSession = (session: DiscoveredSession) => {
+    persistPinnedSession(pinnedSessionId === session.id ? null : session.id);
+  };
+
+  const handleDeleteSession = async (session: DiscoveredSession) => {
+    try {
+      await invoke("delete_session_file", { filePath: session.file_path });
+      let nextSessions: DiscoveredSession[] = [];
+      setSessionItems((current) => {
+        nextSessions = current.filter((item) => item.id !== session.id);
+        return nextSessions;
+      });
+      if (pinnedSessionId === session.id) {
+        persistPinnedSession(null);
+      }
+      setActiveSession((current) => {
+        if (current?.id !== session.id) return current;
+        const nextPinnedId = pinnedSessionId === session.id ? null : pinnedSessionId;
+        const pinnedRemaining = nextPinnedId
+          ? nextSessions.find((item) => item.id === nextPinnedId) ?? null
+          : null;
+        return pinnedRemaining ?? nextSessions[0] ?? null;
+      });
+      queryClient.invalidateQueries({ queryKey: ["existing-sessions"] }).catch(console.error);
+    } catch (error) {
+      console.error(error);
+      window.alert("Failed to delete session.");
+    }
+  };
+
+  const requestDeleteSession = (session: DiscoveredSession) => {
+    setPendingDeleteSessionId(session.id);
+  };
+
+  const cancelDeleteSession = () => {
+    setPendingDeleteSessionId(null);
+  };
+
+  const confirmDeleteSession = async () => {
+    const session = sessionItems.find((item) => item.id === pendingDeleteSessionId);
+    if (!session) {
+      setPendingDeleteSessionId(null);
+      return;
+    }
+    setPendingDeleteSessionId(null);
+    await handleDeleteSession(session);
+  };
+
+  useEffect(() => {
+    const sessions = workspace.sessions;
+    setSessionItems(sessions);
+    let pinnedId: string | null = null;
+    try {
+      const raw = window.localStorage.getItem(PINNED_SESSION_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, string | null>;
+        pinnedId = parsed[workspace.encoded_name] ?? null;
+      }
+    } catch {
+      // Ignore malformed storage.
+    }
+    setPinnedSessionId(pinnedId);
+    const pinnedSession = pinnedId ? sessions.find((session) => session.id === pinnedId) ?? null : null;
+    setActiveSession(pinnedSession ?? sessions[0] ?? null);
+  }, [workspace.encoded_name, workspace.sessions]);
+
+  const syncInteractiveTerminalSize = (sessionId: string) => {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) return;
+    fitAddon.fit();
+    invoke("resize_interactive_command", {
+      sessionId,
+      cols: terminal.cols,
+      rows: terminal.rows,
+    }).catch(console.error);
+  };
 
   const fileSuggestions = useMemo(() => {
     const normalized = autocompleteQuery.trim().toLowerCase();
@@ -99,7 +230,9 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
 
   const commandSuggestions = useMemo(() => {
     const normalized = autocompleteQuery.trim().toLowerCase();
-    const deduped = Array.from(new Map(slashCommands.map((command) => [command.name, command])).values());
+    const deduped = Array.from(
+      new Map([...BUILTIN_SLASH_COMMANDS, ...slashCommands].map((command) => [command.name, command])).values()
+    );
     const ranked = normalized
       ? deduped.filter((command) => (
           command.name.toLowerCase().includes(normalized)
@@ -243,6 +376,127 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
   }, [activeSession?.file_path]);
 
   useEffect(() => {
+    const unlistenOutput = listen<InteractiveEventPayload>("claudy://interactive-output", (event) => {
+      if (event.payload.session_id !== interactiveSessionId) return;
+      setInteractiveOutput((current) => current + event.payload.data);
+    });
+    const unlistenExit = listen<{ session_id: string }>("claudy://interactive-exit", (event) => {
+      if (event.payload.session_id !== interactiveSessionId) return;
+      setInteractiveSessionId(null);
+      setInteractiveStarting(false);
+      setInteractiveOutput((current) => current.endsWith("\n") ? `${current}[session closed]\n` : `${current}\n[session closed]\n`);
+    });
+
+    return () => {
+      unlistenOutput.then((fn) => fn());
+      unlistenExit.then((fn) => fn());
+    };
+  }, [interactiveSessionId]);
+
+  useEffect(() => {
+    if (!interactiveVisible || !terminalContainerRef.current || terminalRef.current) return;
+
+    const terminal = new Terminal({
+      convertEol: false,
+      cursorBlink: true,
+      cursorStyle: "block",
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontSize: 13,
+      lineHeight: 1.35,
+      theme: {
+        background: "#0b0c10",
+        foreground: "#e4e4e7",
+        cursor: "#FFE100",
+        selectionBackground: "rgba(255, 225, 0, 0.22)",
+        black: "#0b0c10",
+        red: "#f87171",
+        green: "#4ade80",
+        yellow: "#FFE100",
+        blue: "#60a5fa",
+        magenta: "#c084fc",
+        cyan: "#22d3ee",
+        white: "#f4f4f5",
+        brightBlack: "#52525b",
+        brightRed: "#fca5a5",
+        brightGreen: "#86efac",
+        brightYellow: "#fde047",
+        brightBlue: "#93c5fd",
+        brightMagenta: "#d8b4fe",
+        brightCyan: "#67e8f9",
+        brightWhite: "#ffffff",
+      },
+    });
+    const fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.open(terminalContainerRef.current);
+    fitAddon.fit();
+    terminal.focus();
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type === "keydown" && event.key === "Escape") {
+        void closeInteractiveOverlay();
+        return false;
+      }
+      return true;
+    });
+    terminalRef.current = terminal;
+    fitAddonRef.current = fitAddon;
+    interactiveWrittenLengthRef.current = 0;
+
+    const disposable = terminal.onData((data) => {
+      if (!interactiveSessionId) return;
+      invoke("write_interactive_command", {
+        sessionId: interactiveSessionId,
+        input: data,
+      }).catch(console.error);
+    });
+
+    if (interactiveOutput) {
+      terminal.write(interactiveOutput);
+      interactiveWrittenLengthRef.current = interactiveOutput.length;
+    }
+
+    if (interactiveSessionId) {
+      syncInteractiveTerminalSize(interactiveSessionId);
+    }
+
+    const onResize = () => {
+      if (!interactiveSessionId) return;
+      syncInteractiveTerminalSize(interactiveSessionId);
+    };
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      window.removeEventListener("resize", onResize);
+      disposable.dispose();
+      terminal.dispose();
+      terminalRef.current = null;
+      fitAddonRef.current = null;
+      interactiveWrittenLengthRef.current = 0;
+    };
+  }, [interactiveVisible, interactiveSessionId]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const nextChunk = interactiveOutput.slice(interactiveWrittenLengthRef.current);
+    if (!nextChunk) return;
+    terminal.write(nextChunk);
+    interactiveWrittenLengthRef.current = interactiveOutput.length;
+  }, [interactiveOutput]);
+
+  useEffect(() => {
+    if (!interactiveVisible) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void closeInteractiveOverlay();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [interactiveVisible, interactiveSessionId]);
+
+  useEffect(() => {
     if (!activeSuggestions.length) {
       setAutocompleteIndex(0);
       if (autocompleteOpen) setAutocompleteOpen(false);
@@ -315,9 +569,51 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
     });
   };
 
+  const closeInteractiveOverlay = async () => {
+    const sessionId = interactiveSessionId;
+    setInteractiveVisible(false);
+    setInteractiveStarting(false);
+    setInteractiveSessionId(null);
+    if (!sessionId) return;
+    try {
+      await invoke("close_interactive_command", { sessionId });
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const startInteractiveOverlay = async (commandText: string) => {
+    setInteractiveVisible(true);
+    setInteractiveStarting(true);
+    setInteractiveOutput("");
+    try {
+      const sessionId = await invoke<string>("start_interactive_command", {
+        workspacePath: workspace.decoded_path,
+        initialInput: commandText,
+      });
+      setInteractiveSessionId(sessionId);
+    } catch (error) {
+      console.error(error);
+      setInteractiveOutput("[error] Failed to start interactive Claude session.\r\n");
+      setInteractiveVisible(true);
+    } finally {
+      setInteractiveStarting(false);
+    }
+  };
+
   const handleSend = () => {
     const text = input.trim();
     if ((!text && selectedFileRefs.length === 0) || !activeSession || streaming) return;
+    if (text.startsWith("/") && selectedFileRefs.length === 0) {
+      setInput("");
+      setAutocompleteMode(null);
+      setAutocompleteQuery("");
+      setAutocompleteOpen(false);
+      setAutocompleteIndex(0);
+      setAutocompleteRange(null);
+      void startInteractiveOverlay(text);
+      return;
+    }
     const message = selectedFileRefs.length
       ? `${selectedFileRefs.map((file) => `@${file}`).join("\n")}${text ? `\n\n${text}` : ""}`
       : text;
@@ -415,16 +711,22 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
         {/* Session list */}
         <ScrollArea style={{ flex: 1 }}>
           <Box pb={12}>
-            {sessions.length === 0 ? (
+            {sessionItems.length === 0 ? (
               <Text size="xs" c="#52525b" px={14} pt={8}>No sessions yet</Text>
             ) : (
-              sessions.map((s) => (
+              sessionItems.map((s) => (
                 <SessionItem
                   key={s.id}
                   session={s}
                   active={activeSession?.id === s.id}
+                  pinned={pinnedSessionId === s.id}
+                  confirmingDelete={pendingDeleteSessionId === s.id}
                   loading={loadingSessionId === s.id}
                   onClick={() => setActiveSession(s)}
+                  onPin={() => handlePinSession(s)}
+                  onDelete={() => requestDeleteSession(s)}
+                  onConfirmDelete={() => void confirmDeleteSession()}
+                  onCancelDelete={cancelDeleteSession}
                 />
               ))
             )}
@@ -433,7 +735,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
       </Box>
 
       {/* ── Main panel ── */}
-      <Box style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <Box style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
         {mainHeader}
         {/* Top bar */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr auto", alignItems: "center", gap: 12, padding: "0 24px", height: 52, borderBottom: "1px solid #1f1f23", flexShrink: 0 }}>
@@ -672,6 +974,80 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
             </UnstyledButton>
           </Box>
         </Box>
+
+        {interactiveVisible ? (
+          <Box
+            style={{
+              position: "absolute",
+              inset: mainHeader ? "40px 0 0 0" : 0,
+              background: "rgba(8, 8, 11, 0.92)",
+              backdropFilter: "blur(4px)",
+              display: "flex",
+              flexDirection: "column",
+              zIndex: 30,
+            }}
+          >
+            <Box
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "flex-end",
+                padding: "10px 12px",
+                borderBottom: "1px solid #27272a",
+                background: "#111115",
+              }}
+            >
+              <UnstyledButton
+                onClick={() => void closeInteractiveOverlay()}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  border: "1px solid #30303a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "#a1a1aa",
+                }}
+              >
+                <CloseIcon />
+              </UnstyledButton>
+            </Box>
+
+            <Box
+              style={{
+                flex: 1,
+                minHeight: 0,
+                padding: "16px 18px 18px",
+                background: "#0b0c10",
+              }}
+            >
+              <Box
+                ref={terminalContainerRef}
+                style={{
+                  height: "100%",
+                  border: "1px solid #27272a",
+                  borderRadius: 10,
+                  overflow: "hidden",
+                }}
+              />
+            </Box>
+
+            <Box
+              style={{
+                padding: "10px 20px 14px",
+                borderTop: "1px solid #27272a",
+                background: "#111115",
+              }}
+            >
+              <Text size="xs" c="#71717a">
+                {interactiveStarting
+                  ? "Starting interactive Claude session..."
+                  : "Type directly in the terminal. Press Esc or use close to return to chat."}
+              </Text>
+            </Box>
+          </Box>
+        ) : null}
       </Box>
     </Box>
   );
@@ -682,25 +1058,37 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
 function SessionItem({
   session,
   active,
+  pinned,
+  confirmingDelete,
   loading,
   onClick,
+  onPin,
+  onDelete,
+  onConfirmDelete,
+  onCancelDelete,
 }: {
   session: DiscoveredSession;
   active: boolean;
+  pinned: boolean;
+  confirmingDelete: boolean;
   loading: boolean;
   onClick: () => void;
+  onPin: () => void;
+  onDelete: () => void;
+  onConfirmDelete: () => void;
+  onCancelDelete: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
 
   return (
-    <UnstyledButton
+    <Box
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
         width: "calc(100% - 8px)",
         marginLeft: 8,
-        padding: "7px 14px 7px 28px",
+        padding: "7px 14px",
         borderLeft: active ? "2px solid #FFE100" : "2px solid transparent",
         borderTop: active ? "1px solid #2a2a32" : "1px solid transparent",
         borderRight: active ? "1px solid #2a2a32" : "1px solid transparent",
@@ -708,21 +1096,91 @@ function SessionItem({
         background: active ? "#1e1e24" : hovered ? "#18181b" : "transparent",
         textAlign: "left",
         display: "flex",
-        alignItems: "baseline",
+        alignItems: "center",
         gap: 8,
+        cursor: "pointer",
       }}
     >
-      <Text
-        size="xs"
-        fw={active ? 500 : 400}
-        c={active ? "#e4e4e7" : hovered ? "#a1a1aa" : "#71717a"}
-        style={{ flex: 1, minWidth: 0, lineHeight: 1.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-      >
-        {session.first_message ?? "Empty session"}
-      </Text>
-      <Text size="xs" c="#3f3f46" style={{ flexShrink: 0, fontSize: 11 }}>
-        {loading ? "Loading..." : relativeTime(session.modified_at)}
-      </Text>
+      {confirmingDelete ? (
+        <>
+          <Text size="xs" c="#e4e4e7" style={{ flex: 1, minWidth: 0 }}>
+            Delete session?
+          </Text>
+          <ActionIconButton visible active={false} title="Cancel" onClick={onCancelDelete}>
+            <CloseIcon />
+          </ActionIconButton>
+          <ActionIconButton visible active={false} title="Confirm delete" onClick={onConfirmDelete}>
+            <TrashIcon />
+          </ActionIconButton>
+        </>
+      ) : (
+        <>
+          <ActionIconButton
+            visible={hovered || pinned}
+            active={pinned}
+            title={pinned ? "Unpin session" : "Pin session"}
+            onClick={onPin}
+          >
+            <PinIcon />
+          </ActionIconButton>
+          <Text
+            size="xs"
+            fw={active ? 500 : 400}
+            c={active ? "#e4e4e7" : hovered ? "#a1a1aa" : "#71717a"}
+            style={{ flex: 1, minWidth: 0, lineHeight: 1.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          >
+            {session.first_message ?? "Empty session"}
+          </Text>
+          <Text size="xs" c="#3f3f46" style={{ flexShrink: 0, fontSize: 11 }}>
+            {loading ? "Loading..." : relativeTime(session.modified_at)}
+          </Text>
+          <ActionIconButton
+            visible={hovered}
+            active={false}
+            title="Delete session"
+            onClick={onDelete}
+          >
+            <TrashIcon />
+          </ActionIconButton>
+        </>
+      )}
+    </Box>
+  );
+}
+
+function ActionIconButton({
+  visible,
+  active,
+  title,
+  onClick,
+  children,
+}: {
+  visible: boolean;
+  active: boolean;
+  title: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <UnstyledButton
+      title={title}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      style={{
+        width: 24,
+        height: 24,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        color: active ? "#FFE100" : visible ? "#71717a" : "transparent",
+        opacity: visible ? 1 : 0,
+        transition: "opacity 120ms, color 120ms",
+      }}
+    >
+      {children}
     </UnstyledButton>
   );
 }
@@ -828,6 +1286,26 @@ function FolderIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "#52525b", flexShrink: 0 }}>
       <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function PinIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+      <path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M12 13v8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+      <path d="M4 7h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M7 7l1 12a2 2 0 002 2h4a2 2 0 002-2l1-12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M10 11v5M14 11v5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }

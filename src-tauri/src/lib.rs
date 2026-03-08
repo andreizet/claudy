@@ -1,9 +1,14 @@
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, State};
 use base64::Engine;
 
 // ─── Data types ───────────────────────────────────────────────────────────────
@@ -39,6 +44,39 @@ pub struct SlashCommandInfo {
     pub description: Option<String>,
     pub argument_hint: Option<String>,
     pub source: String,
+}
+
+#[derive(Serialize, Clone)]
+struct InteractiveOutputPayload {
+    session_id: String,
+    data: String,
+}
+
+#[derive(Serialize, Clone)]
+struct InteractiveExitPayload {
+    session_id: String,
+}
+
+struct InteractiveSession {
+    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
+}
+
+#[derive(Default)]
+struct InteractiveSessionStore {
+    sessions: Mutex<HashMap<String, InteractiveSession>>,
+}
+
+static NEXT_INTERACTIVE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn interactive_pty_size(cols: u16, rows: u16) -> PtySize {
+    PtySize {
+        rows: rows.max(10),
+        cols: cols.max(20),
+        pixel_width: 0,
+        pixel_height: 0,
+    }
 }
 
 // ─── Path decoding ────────────────────────────────────────────────────────────
@@ -177,6 +215,27 @@ fn modified_at_secs(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+fn claude_binary_and_path() -> (String, String) {
+    let home = dirs_next::home_dir().unwrap_or_default();
+    let full_path = format!(
+        "{}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+        home.to_string_lossy()
+    );
+
+    let candidates = [
+        format!("{}/.local/bin/claude", home.to_string_lossy()),
+        "/usr/local/bin/claude".to_string(),
+        "/opt/homebrew/bin/claude".to_string(),
+    ];
+    let claude_bin = candidates
+        .iter()
+        .find(|p| Path::new(p.as_str()).exists())
+        .cloned()
+        .unwrap_or_else(|| "claude".to_string());
+
+    (claude_bin, full_path)
+}
+
 // ─── Tauri commands ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -197,6 +256,44 @@ fn get_session_messages(file_path: String) -> Vec<serde_json::Value> {
         .collect();
     eprintln!("[get_session_messages] parsed {} records", records.len());
     records
+}
+
+#[tauri::command]
+fn delete_session_file(file_path: String) -> Result<(), String> {
+    let path = PathBuf::from(file_path);
+    if !path.exists() {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Invalid session path".to_string())?
+        .to_path_buf();
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Invalid session filename".to_string())?
+        .to_string();
+
+    let mut removed_any = false;
+    for entry in fs::read_dir(&parent).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let entry_path = entry.path();
+        let entry_stem = entry_path.file_stem().and_then(|value| value.to_str());
+        if entry_stem != Some(stem.as_str()) {
+            continue;
+        }
+
+        if entry_path.is_file() {
+            fs::remove_file(&entry_path).map_err(|e| e.to_string())?;
+            removed_any = true;
+        }
+    }
+
+    if !removed_any && path.exists() {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -614,6 +711,188 @@ fn get_workspace_slash_commands(workspace_path: String) -> Vec<SlashCommandInfo>
     commands
 }
 
+#[tauri::command]
+fn start_interactive_command(
+    app: AppHandle,
+    store: State<InteractiveSessionStore>,
+    workspace_path: String,
+    initial_input: Option<String>,
+) -> Result<String, String> {
+    let cwd = PathBuf::from(&workspace_path);
+    if !cwd.exists() || !cwd.is_dir() {
+        return Err("Workspace path does not exist".to_string());
+    }
+
+    let (claude_bin, full_path) = claude_binary_and_path();
+    let session_id = format!("interactive-{}", NEXT_INTERACTIVE_ID.fetch_add(1, Ordering::Relaxed));
+    let pty_system = native_pty_system();
+    let pty_pair = pty_system
+        .openpty(interactive_pty_size(140, 40))
+        .map_err(|e| e.to_string())?;
+
+    let mut cmd = CommandBuilder::new(&claude_bin);
+    cmd.cwd(&cwd);
+    cmd.env("PATH", &full_path);
+
+    let child = pty_pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| e.to_string())?;
+    let writer = pty_pair
+        .master
+        .take_writer()
+        .map_err(|e| e.to_string())?;
+    let stdout = pty_pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| e.to_string())?;
+
+    drop(pty_pair.slave);
+
+    let child = Arc::new(Mutex::new(child));
+    let writer = Arc::new(Mutex::new(writer));
+    let master = Arc::new(Mutex::new(pty_pair.master));
+
+    {
+        let mut sessions = store.sessions.lock().map_err(|_| "Interactive session lock poisoned".to_string())?;
+        sessions.insert(
+            session_id.clone(),
+            InteractiveSession {
+                child: Arc::clone(&child),
+                writer: Arc::clone(&writer),
+                master: Arc::clone(&master),
+            },
+        );
+    }
+
+    if let Some(initial_input) = initial_input
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        let initial_writer = Arc::clone(&writer);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            if let Ok(mut writer) = initial_writer.lock() {
+                let _ = writer.write_all(initial_input.as_bytes());
+                let _ = writer.flush();
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                let _ = writer.write_all(b"\r");
+                let _ = writer.flush();
+            }
+        });
+    }
+
+    let stdout_session_id = session_id.clone();
+    let stdout_app = app.clone();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut buffer = [0u8; 4096];
+        loop {
+            let Ok(read) = reader.read(&mut buffer) else {
+                break;
+            };
+            if read == 0 {
+                break;
+            }
+            let chunk = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let _ = stdout_app.emit(
+                "claudy://interactive-output",
+                InteractiveOutputPayload {
+                    session_id: stdout_session_id.clone(),
+                    data: chunk,
+                },
+            );
+        }
+    });
+
+    let wait_session_id = session_id.clone();
+    let wait_app = app.clone();
+    let wait_child = Arc::clone(&child);
+    std::thread::spawn(move || {
+        if let Ok(mut child) = wait_child.lock() {
+            let _ = child.wait();
+        }
+        let state = wait_app.state::<InteractiveSessionStore>();
+        if let Ok(mut sessions) = state.sessions.lock() {
+            sessions.remove(&wait_session_id);
+        }
+        let _ = wait_app.emit(
+            "claudy://interactive-exit",
+            InteractiveExitPayload {
+                session_id: wait_session_id,
+            },
+        );
+    });
+
+    Ok(session_id)
+}
+
+#[tauri::command]
+fn write_interactive_command(
+    store: State<InteractiveSessionStore>,
+    session_id: String,
+    input: String,
+) -> Result<(), String> {
+    let sessions = store.sessions.lock().map_err(|_| "Interactive session lock poisoned".to_string())?;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| "Interactive session not found".to_string())?;
+    let mut writer = session
+        .writer
+        .lock()
+        .map_err(|_| "Interactive stdin lock poisoned".to_string())?;
+    writer
+        .write_all(input.as_bytes())
+        .map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn resize_interactive_command(
+    store: State<InteractiveSessionStore>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let sessions = store
+        .sessions
+        .lock()
+        .map_err(|_| "Interactive session lock poisoned".to_string())?;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| "Interactive session not found".to_string())?;
+    let master = session
+        .master
+        .lock()
+        .map_err(|_| "Interactive master lock poisoned".to_string())?;
+    master
+        .resize(interactive_pty_size(cols, rows))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn close_interactive_command(
+    store: State<InteractiveSessionStore>,
+    session_id: String,
+) -> Result<(), String> {
+    let session = {
+        let mut sessions = store.sessions.lock().map_err(|_| "Interactive session lock poisoned".to_string())?;
+        sessions.remove(&session_id)
+    };
+
+    let Some(session) = session else {
+        return Ok(());
+    };
+
+    std::thread::spawn(move || {
+        if let Ok(mut child) = session.child.lock() {
+            let _ = child.kill();
+        }
+    });
+
+    Ok(())
+}
+
 // ─── Send message ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -626,23 +905,7 @@ fn send_message(
     effort: String,
 ) -> Result<(), String> {
     std::thread::spawn(move || {
-        let home = dirs_next::home_dir().unwrap_or_default();
-        let full_path = format!(
-            "{}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
-            home.to_string_lossy()
-        );
-
-        // Find claude binary
-        let candidates = [
-            format!("{}/.local/bin/claude", home.to_string_lossy()),
-            "/usr/local/bin/claude".to_string(),
-            "/opt/homebrew/bin/claude".to_string(),
-        ];
-        let claude_bin = candidates
-            .iter()
-            .find(|p| std::path::Path::new(p.as_str()).exists())
-            .cloned()
-            .unwrap_or_else(|| "claude".to_string());
+        let (claude_bin, full_path) = claude_binary_and_path();
 
         eprintln!("[send_message] claude={} cwd={} session={}", claude_bin, cwd, session_id);
 
@@ -707,13 +970,19 @@ fn send_message(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(InteractiveSessionStore::default())
         .invoke_handler(tauri::generate_handler![
             scan_existing_sessions,
+            delete_session_file,
             get_session_messages,
             get_claude_account_info,
             get_workspace_favicon,
             get_workspace_files,
             get_workspace_slash_commands,
+            start_interactive_command,
+            write_interactive_command,
+            resize_interactive_command,
+            close_interactive_command,
             send_message
         ])
         .run(tauri::generate_context!())
