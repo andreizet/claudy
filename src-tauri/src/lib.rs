@@ -33,6 +33,14 @@ pub struct ClaudeAccountInfo {
     pub organization_role: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SlashCommandInfo {
+    pub name: String,
+    pub description: Option<String>,
+    pub argument_hint: Option<String>,
+    pub source: String,
+}
+
 // ─── Path decoding ────────────────────────────────────────────────────────────
 
 /// Claude Code encodes a project path by replacing ALL non-alphanumeric characters
@@ -390,6 +398,222 @@ fn file_to_data_url(path: &Path) -> Option<String> {
     Some(format!("data:{};base64,{}", mime, encoded))
 }
 
+fn should_skip_dir_name(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | "dist"
+            | "build"
+            | "target"
+            | ".next"
+            | ".nuxt"
+            | ".turbo"
+            | ".cache"
+            | ".claude"
+            | ".codex"
+            | ".idea"
+            | ".vscode"
+            | "coverage"
+    )
+}
+
+fn extract_frontmatter(raw: &str) -> Option<&str> {
+    let mut lines = raw.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+
+    let mut end_offset: usize = 4;
+    for line in lines {
+        if line.trim() == "---" {
+            return raw.get(4..end_offset.saturating_sub(1));
+        }
+        end_offset += line.len() + 1;
+    }
+
+    None
+}
+
+fn parse_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
+    frontmatter.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let (raw_key, raw_value) = trimmed.split_once(':')?;
+        if raw_key.trim() != key {
+            return None;
+        }
+        let value = raw_value.trim().trim_matches('"').trim_matches('\'').trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    })
+}
+
+fn frontmatter_flag(frontmatter: &str, key: &str) -> Option<bool> {
+    parse_frontmatter_value(frontmatter, key).and_then(|value| match value.as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    })
+}
+
+fn collect_custom_slash_commands(
+    root: &Path,
+    source: &str,
+    is_skill_dir: bool,
+    commands: &mut Vec<SlashCommandInfo>,
+) {
+    if !root.exists() || !root.is_dir() {
+        return;
+    }
+
+    for entry in walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let path = entry.path();
+        let is_match = if is_skill_dir {
+            path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
+        } else {
+            path.extension().and_then(|ext| ext.to_str()) == Some("md")
+        };
+        if !is_match {
+            continue;
+        }
+
+        let raw = match fs::read_to_string(path) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        let frontmatter = extract_frontmatter(&raw).unwrap_or("");
+        if frontmatter_flag(frontmatter, "user-invocable") == Some(false) {
+            continue;
+        }
+
+        let fallback_name = if is_skill_dir {
+            path.parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            path.file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+
+        let name = parse_frontmatter_value(frontmatter, "name").unwrap_or(fallback_name);
+        if name.is_empty() {
+            continue;
+        }
+
+        commands.push(SlashCommandInfo {
+            name,
+            description: parse_frontmatter_value(frontmatter, "description"),
+            argument_hint: parse_frontmatter_value(frontmatter, "argument-hint"),
+            source: source.to_string(),
+        });
+    }
+}
+
+#[tauri::command]
+fn get_workspace_files(workspace_path: String) -> Vec<String> {
+    let workspace = PathBuf::from(workspace_path);
+    if !workspace.exists() || !workspace.is_dir() {
+        return vec![];
+    }
+
+    let mut files = Vec::new();
+
+    for entry in walkdir::WalkDir::new(&workspace)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            if !entry.file_type().is_dir() {
+                return true;
+            }
+            entry
+                .file_name()
+                .to_str()
+                .map(|name| !should_skip_dir_name(name))
+                .unwrap_or(false)
+        })
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let Ok(relative) = entry.path().strip_prefix(&workspace) else {
+            continue;
+        };
+
+        let Some(relative_str) = relative.to_str() else {
+            continue;
+        };
+
+        if relative_str.is_empty() {
+            continue;
+        }
+
+        files.push(relative_str.replace('\\', "/"));
+
+        if files.len() >= 3_000 {
+            break;
+        }
+    }
+
+    files.sort();
+    files
+}
+
+#[tauri::command]
+fn get_workspace_slash_commands(workspace_path: String) -> Vec<SlashCommandInfo> {
+    let workspace = PathBuf::from(workspace_path);
+    let mut commands = Vec::new();
+
+    if let Some(home) = dirs_next::home_dir() {
+        collect_custom_slash_commands(
+            &home.join(".claude").join("commands"),
+            "user",
+            false,
+            &mut commands,
+        );
+        collect_custom_slash_commands(
+            &home.join(".claude").join("skills"),
+            "user",
+            true,
+            &mut commands,
+        );
+    }
+
+    collect_custom_slash_commands(
+        &workspace.join(".claude").join("commands"),
+        "project",
+        false,
+        &mut commands,
+    );
+    collect_custom_slash_commands(
+        &workspace.join(".claude").join("skills"),
+        "project",
+        true,
+        &mut commands,
+    );
+
+    commands.sort_by(|a, b| a.name.cmp(&b.name));
+    commands.dedup_by(|a, b| a.name == b.name);
+    commands
+}
+
 // ─── Send message ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -488,6 +712,8 @@ pub fn run() {
             get_session_messages,
             get_claude_account_info,
             get_workspace_favicon,
+            get_workspace_files,
+            get_workspace_slash_commands,
             send_message
         ])
         .run(tauri::generate_context!())
