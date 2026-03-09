@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { Box, Text, TextInput, Button, Group, Stack, ScrollArea, UnstyledButton, Skeleton } from "@mantine/core";
+import { Cog, Plus, Search } from "lucide-react";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "../types";
 import ProjectListItem from "../components/ProjectListItem";
 import sidebarTitle from "../assets/sidebar-title.svg";
@@ -180,11 +181,13 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
             style={{
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
               gap: 8,
-              padding: "6px 6px",
+              padding: "8px 12px",
               borderRadius: 6,
               color: "#52525b",
-              width: "100%",
+              width: "fit-content",
+              margin: "0 auto",
             }}
             onMouseEnter={(e) => {
               (e.currentTarget as HTMLElement).style.color = "#a1a1aa";
@@ -245,11 +248,11 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
                   multiple: false,
                   title: "Choose project folder",
                 });
-                if (typeof selected === "string" && selected) {
+              if (typeof selected === "string" && selected) {
                   onCreateSession(selected);
                 }
               }}
-              leftSection={<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>}
+              leftSection={<Plus size={12} strokeWidth={2.5} />}
               styles={{
                 root: {
                   background: "#f4f4f5",
@@ -451,35 +454,9 @@ function EmptyState({
 }
 
 function SearchIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      style={{ color: "#52525b", flexShrink: 0 }}
-    >
-      <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" strokeWidth="1.5" />
-      <path
-        d="M10.5 10.5L14 14"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
+  return <Search size={14} strokeWidth={1.8} style={{ color: "#52525b", flexShrink: 0 }} />;
 }
 
 function SettingsIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-      <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.5" />
-      <path
-        d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
+  return <Cog size={24} strokeWidth={1.8} />;
 }

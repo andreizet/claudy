@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Box, Text, Stack, Tooltip, Badge } from "@mantine/core";
+import { Star } from "lucide-react";
 import { DiscoveredWorkspace } from "../types";
 
 interface Props {
@@ -165,14 +166,7 @@ export default function ProjectListItem({ workspace, faviconDataUrl, isFavorite,
               padding: 0,
             }}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill={isFavorite ? "currentColor" : "none"}>
-              <path
-                d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"
-                stroke="currentColor"
-                strokeWidth="1.6"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <Star size={14} strokeWidth={1.8} fill={isFavorite ? "currentColor" : "none"} />
           </Box>
         </Tooltip>
         {isMissing ? (

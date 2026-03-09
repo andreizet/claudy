@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Box, ScrollArea, Text } from "@mantine/core";
+import {
+  ChevronDown,
+  ChevronUp,
+  FilePenLine,
+  FileText,
+  Terminal,
+  Wrench,
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import * as Diff from "diff";
@@ -441,9 +449,7 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
     return (
       <Box style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
         <Box style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 12px", borderRadius: 8, background: "#18181b", border: "1px solid #27272a" }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style={{ color: "#52525b", flexShrink: 0 }}>
-            <path d="M4 17l6-6-6-6M12 19h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          <Terminal size={12} strokeWidth={2} style={{ color: "#52525b", flexShrink: 0 }} />
           <Text size="sm" ff="monospace" c="#d4d4d8">{display || cmdMsg || cmdName}</Text>
         </Box>
       </Box>
@@ -697,12 +703,11 @@ function ToolCard({ block, result }: { block: ContentBlockToolUse; result?: { co
           )}
         </Box>
         {canExpand && (
-          <svg
-            width="12" height="12" viewBox="0 0 24 24" fill="none"
+          <ChevronDown
+            size={12}
+            strokeWidth={2}
             style={{ flexShrink: 0, color: "#3f3f46", transform: expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 150ms" }}
-          >
-            <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          />
         )}
       </Box>
 
@@ -866,26 +871,15 @@ function shortenPath(p: string): string {
 function ToolIcon({ name }: { name: string }) {
   const color = "#71717a";
   if (name === "Bash") {
-    return (
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0, color }}>
-        <path d="M4 17l6-6-6-6M12 19h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
+    return <Terminal size={13} strokeWidth={2} style={{ flexShrink: 0, color }} />;
   }
   if (name === "Write" || name === "Edit" || name === "MultiEdit") {
-    return (
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0, color }}>
-        <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-        <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      </svg>
-    );
+    return <FilePenLine size={13} strokeWidth={2} style={{ flexShrink: 0, color }} />;
   }
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0, color }}>
-      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M14 2v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
+  if (name === "Read") {
+    return <FileText size={13} strokeWidth={2} style={{ flexShrink: 0, color }} />;
+  }
+  return <Wrench size={13} strokeWidth={2} style={{ flexShrink: 0, color }} />;
 }
 
 // ── Timing indicator ──────────────────────────────────────────────────────────
@@ -955,9 +949,9 @@ function ScrollNav({
       }}
     >
       {[
-        { label: "Top", onClick: onTop, path: "M18 15l-6-6-6 6", disabled: disableTop },
-        { label: "Bottom", onClick: onBottom, path: "M6 9l6 6 6-6", disabled: disableBottom },
-      ].map(({ label, onClick, path, disabled }) => (
+        { label: "Top", onClick: onTop, icon: <ChevronUp size={13} strokeWidth={2} />, disabled: disableTop },
+        { label: "Bottom", onClick: onBottom, icon: <ChevronDown size={13} strokeWidth={2} />, disabled: disableBottom },
+      ].map(({ label, onClick, icon, disabled }) => (
         <Box
           key={label}
           component="button"
@@ -980,9 +974,7 @@ function ScrollNav({
             padding: 0,
           }}
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-            <path d={path} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          {icon}
         </Box>
       ))}
     </Box>

@@ -1,5 +1,18 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { Box, Text, ScrollArea, UnstyledButton, Group, Skeleton, Tooltip } from "@mantine/core";
+import {
+  ChevronDown,
+  ChevronLeft as ChevronLeftIcon,
+  Cog,
+  Folder,
+  Pen,
+  Pin,
+  Plus,
+  Send,
+  Square,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -1195,9 +1208,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
               fontWeight: 500,
             }}
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-            </svg>
+            <Plus size={12} strokeWidth={2.2} />
             <Text size="xs" inherit>New Session</Text>
           </UnstyledButton>
         </Box>
@@ -1443,19 +1454,9 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
                 }}
               >
                 {streaming ? (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "#52525b" }}>
-                    <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
-                  </svg>
+                  <Square size={14} fill="currentColor" strokeWidth={0} style={{ color: "#52525b" }} />
                 ) : (
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    style={{ color: input.trim() || selectedFileRefs.length > 0 ? "#0c0c0f" : "#52525b" }}
-                  >
-                    <path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
+                  <Send size={14} strokeWidth={2} style={{ color: input.trim() || selectedFileRefs.length > 0 ? "#0c0c0f" : "#52525b" }} />
                 )}
               </UnstyledButton>
             </Box>
@@ -1883,9 +1884,7 @@ function SessionSettingsOverlay({
                   color: "#a1a1aa",
                 }}
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style={{ transform: mcpExpanded ? "rotate(180deg)" : "none" }}>
-                  <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
+                <ChevronDown size={12} strokeWidth={2} style={{ transform: mcpExpanded ? "rotate(180deg)" : "none" }} />
                 <Text size="xs" fw={600} c="#a1a1aa">
                   MCP Servers ({mcpGroups.length})
                 </Text>
@@ -1993,31 +1992,11 @@ function MetaField({ label, value, mono }: { label: string; value: string; mono?
 }
 
 function SettingsIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M12 8.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zm8 3.5l-1.8-.5a6.8 6.8 0 00-.5-1.2l1-1.6-1.8-1.8-1.6 1a6.8 6.8 0 00-1.2-.5L14 4h-4l-.5 1.8a6.8 6.8 0 00-1.2.5l-1.6-1-1.8 1.8 1 1.6a6.8 6.8 0 00-.5 1.2L4 12l.5 1.8a6.8 6.8 0 00.5 1.2l-1 1.6 1.8 1.8 1.6-1a6.8 6.8 0 001.2.5L10 20h4l.5-1.8a6.8 6.8 0 001.2-.5l1.6 1 1.8-1.8-1-1.6a6.8 6.8 0 00.5-1.2L20 12z"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
+  return <Cog size={16} strokeWidth={1.8} aria-hidden="true" />;
 }
 
 function EditIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M4 20h4l10-10-4-4L4 16v4zM13 7l4 4"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
+  return <Pen size={14} strokeWidth={1.8} aria-hidden="true" />;
 }
 
 // ── Skeletons & empty states ──────────────────────────────────────────────────
@@ -2071,10 +2050,11 @@ function CompactSelect({ value, onChange, options }: {
       >
         {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
-        style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", pointerEvents: "none", color: "#52525b" }}>
-        <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
+      <ChevronDown
+        size={10}
+        strokeWidth={2}
+        style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", pointerEvents: "none", color: "#52525b" }}
+      />
     </Box>
   );
 }
@@ -2110,45 +2090,21 @@ function EffortSelect({ value, onChange }: { value: string; onChange: (v: string
 }
 
 function ChevronLeft() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-      <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
+  return <ChevronLeftIcon size={14} strokeWidth={2} />;
 }
 
 function FolderIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "#52525b", flexShrink: 0 }}>
-      <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-    </svg>
-  );
+  return <Folder size={14} strokeWidth={1.7} style={{ color: "#52525b", flexShrink: 0 }} />;
 }
 
 function PinIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-      <path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-      <path d="M12 13v8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
+  return <Pin size={15} strokeWidth={1.8} />;
 }
 
 function TrashIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-      <path d="M4 7h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <path d="M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <path d="M7 7l1 12a2 2 0 002 2h4a2 2 0 002-2l1-12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M10 11v5M14 11v5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
+  return <Trash2 size={15} strokeWidth={1.8} />;
 }
 
 function CloseIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-      <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
+  return <X size={12} strokeWidth={2} />;
 }

@@ -135,10 +135,29 @@ describe("App tab and session flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "open-backend" }));
     await waitFor(() => expect(screen.getByText("chat-backend")).toBeInTheDocument());
 
-    const closeButtons = screen.getAllByText("×");
+    const closeButtons = screen.getAllByLabelText(/close .* tab/i);
     fireEvent.click(closeButtons[1]);
 
     await waitFor(() => expect(screen.getByText("chat-claudy")).toBeInTheDocument());
     expect(screen.queryByText("chat-backend")).not.toBeInTheDocument();
+  });
+
+  it("restores saved tabs and the active tab on startup", async () => {
+    window.localStorage.setItem(
+      "claudy.openTabs",
+      JSON.stringify([
+        { id: "tab-1", kind: "chat", workspace: workspaceA, sessionTitle: workspaceA.sessions[0]?.first_message ?? null },
+        { id: "tab-2", kind: "home" },
+        { id: "tab-3", kind: "chat", workspace: workspaceB, sessionTitle: workspaceB.sessions[0]?.first_message ?? null },
+      ])
+    );
+    window.localStorage.setItem("claudy.activeTabId", "tab-3");
+
+    renderWithProviders(<App />);
+
+    await waitFor(() => expect(screen.getByText("chat-backend")).toBeInTheDocument());
+    expect(screen.getByText("backend - Investigate the API")).toBeInTheDocument();
+    expect(screen.getByText("claudy - Implement the login flow")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
   });
 });

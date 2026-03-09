@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Box, Text, UnstyledButton } from "@mantine/core";
+import { Folder, Plus, X } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "./types";
@@ -11,6 +12,8 @@ type AppTab =
   | { id: string; kind: "home" }
   | { id: string; kind: "chat"; workspace: DiscoveredWorkspace; sessionTitle: string | null };
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
+const OPEN_TABS_STORAGE_KEY = "claudy.openTabs";
+const ACTIVE_TAB_STORAGE_KEY = "claudy.activeTabId";
 
 function createTabId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -19,11 +22,76 @@ function createTabId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function createHomeTab(id = createTabId()): AppTab {
+  return { id, kind: "home" };
+}
+
+function isDiscoveredWorkspace(value: unknown): value is DiscoveredWorkspace {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<DiscoveredWorkspace>;
+  return (
+    typeof candidate.encoded_name === "string"
+    && typeof candidate.decoded_path === "string"
+    && typeof candidate.display_name === "string"
+    && typeof candidate.path_exists === "boolean"
+    && Array.isArray(candidate.sessions)
+  );
+}
+
+function loadStoredTabs(): { tabs: AppTab[]; activeTabId: string | null } {
+  try {
+    const rawTabs = window.localStorage.getItem(OPEN_TABS_STORAGE_KEY);
+    const rawActiveTabId = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+    if (!rawTabs) {
+      return { tabs: [createHomeTab()], activeTabId: null };
+    }
+
+    const parsed = JSON.parse(rawTabs);
+    if (!Array.isArray(parsed)) {
+      return { tabs: [createHomeTab()], activeTabId: null };
+    }
+
+    const tabs = parsed.flatMap((tab): AppTab[] => {
+      if (!tab || typeof tab !== "object") return [];
+      const candidate = tab as Partial<AppTab>;
+      if (typeof candidate.id !== "string") return [];
+      if (candidate.kind === "home") {
+        return [{ id: candidate.id, kind: "home" }];
+      }
+      if (
+        candidate.kind === "chat"
+        && isDiscoveredWorkspace(candidate.workspace)
+        && (typeof candidate.sessionTitle === "string" || candidate.sessionTitle === null || candidate.sessionTitle === undefined)
+      ) {
+        return [{
+          id: candidate.id,
+          kind: "chat",
+          workspace: candidate.workspace,
+          sessionTitle: candidate.sessionTitle ?? null,
+        }];
+      }
+      return [];
+    });
+
+    if (tabs.length === 0) {
+      return { tabs: [createHomeTab()], activeTabId: null };
+    }
+
+    const activeTabId = typeof rawActiveTabId === "string" && tabs.some((tab) => tab.id === rawActiveTabId)
+      ? rawActiveTabId
+      : tabs[0].id;
+
+    return { tabs, activeTabId };
+  } catch {
+    return { tabs: [createHomeTab()], activeTabId: null };
+  }
+}
+
 export default function App() {
   const queryClient = useQueryClient();
-  const initialTabId = useMemo(createTabId, []);
-  const [tabs, setTabs] = useState<AppTab[]>([{ id: initialTabId, kind: "home" }]);
-  const [activeTabId, setActiveTabId] = useState(initialTabId);
+  const [initialState] = useState(loadStoredTabs);
+  const [tabs, setTabs] = useState<AppTab[]>(initialState.tabs);
+  const [activeTabId, setActiveTabId] = useState(initialState.activeTabId ?? initialState.tabs[0]?.id ?? createTabId());
   const [showSplash, setShowSplash] = useState(() => !import.meta.env.TEST);
 
   const { data: workspaces = [], isLoading } = useQuery({
@@ -129,6 +197,15 @@ export default function App() {
     };
   }, [tabs, favicons]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(OPEN_TABS_STORAGE_KEY, JSON.stringify(tabs));
+      window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, activeTabId);
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [tabs, activeTabId]);
+
   const hasProjectTabs = tabs.some((t) => t.kind === "chat");
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
 
@@ -139,9 +216,9 @@ export default function App() {
       const stillHasProject = next.some((t) => t.kind === "chat");
 
       if (!stillHasProject) {
-        const homeId = createTabId();
-        setActiveTabId(homeId);
-        return [{ id: homeId, kind: "home" }];
+        const homeTab = createHomeTab();
+        setActiveTabId(homeTab.id);
+        return [homeTab];
       }
 
       if (id === activeTabId) {
@@ -201,7 +278,7 @@ export default function App() {
         const active = tab.id === activeTabId;
         const label = tab.kind === "chat"
           ? `${tab.workspace.display_name} - ${tab.sessionTitle ?? "Session"}`
-          : "Home";
+          : "New";
         const tabIcon = tab.kind === "chat" ? favicons[tab.workspace.encoded_name] ?? null : null;
         return (
           <Box
@@ -238,9 +315,7 @@ export default function App() {
                     style={{ width: 14, height: 14, objectFit: "contain", borderRadius: 3, flexShrink: 0 }}
                   />
                 ) : (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "#71717a", flexShrink: 0 }}>
-                    <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-                  </svg>
+                  <Folder size={14} strokeWidth={1.7} style={{ color: "#71717a", flexShrink: 0 }} />
                 )
               )}
               <Text size="sm" fw={active ? 600 : 500} truncate>
@@ -249,6 +324,8 @@ export default function App() {
             </UnstyledButton>
             <UnstyledButton
               onClick={() => closeTab(tab.id)}
+              aria-label={`Close ${label} tab`}
+              title={`Close ${label} tab`}
               style={{
                 width: 24,
                 height: 24,
@@ -261,7 +338,7 @@ export default function App() {
                 flexShrink: 0,
               }}
             >
-              <Text size="sm" lh={1}>×</Text>
+              <X size={14} strokeWidth={2} />
             </UnstyledButton>
           </Box>
         );
@@ -283,7 +360,7 @@ export default function App() {
         }}
         title="New tab"
       >
-        <Text size="lg" lh={1}>+</Text>
+        <Plus size={16} strokeWidth={2.2} />
       </UnstyledButton>
     </Box>
   );
