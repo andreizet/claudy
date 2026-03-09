@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
-import { Box, Text, TextInput, Button, Group, Stack, ScrollArea, UnstyledButton, Skeleton } from "@mantine/core";
-import { Cog, Plus, Search } from "lucide-react";
+import { Box, Text, TextInput, Button, Group, Stack, ScrollArea, UnstyledButton, Skeleton, Switch } from "@mantine/core";
+import { ChevronDown, Cog, Plus, Search } from "lucide-react";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "../types";
 import ProjectListItem from "../components/ProjectListItem";
 import sidebarTitle from "../assets/sidebar-title.svg";
@@ -8,10 +8,36 @@ import { md5 } from "../shared/md5";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import UsageDashboardView from "./UsageDashboardView";
+import { AppSettings, loadAppSettings, saveAppSettings } from "../shared/settings";
+import {
+  extractMcpServers,
+  loadDefaultToolPolicy,
+  loadToolInventoryCache,
+  saveDefaultToolPolicy,
+  SessionToolState,
+  saveToolInventoryCache,
+  splitToolsBySource,
+} from "../shared/toolPolicy";
 
-type NavItem = "projects" | "favorites" | "usage";
+type NavItem = "projects" | "favorites" | "usage" | "settings";
+type SettingsTab = "general" | "permissions" | "skills" | "hooks";
 const FAVORITES_STORAGE_KEY = "claudy.favoriteWorkspaces";
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
+
+interface ClaudeInstallation {
+  label: string;
+  path: string;
+  is_available: boolean;
+  is_selected: boolean;
+}
+
+interface ClaudeSessionInit {
+  session_id: string | null;
+  cwd: string | null;
+  model: string | null;
+  tools: string[];
+  mcp_servers: unknown;
+}
 
 function loadFavoriteWorkspaces(): Set<string> {
   try {
@@ -36,9 +62,14 @@ interface Props {
 
 export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWorkspace, onCreateSession, mainHeader }: Props) {
   const [activeNav, setActiveNav] = useState<NavItem>("projects");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [search, setSearch] = useState("");
   const [favorites, setFavorites] = useState<Set<string>>(loadFavoriteWorkspaces);
   const [favicons, setFavicons] = useState<Record<string, string | null>>({});
+  const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings);
+  const [defaultToolState, setDefaultToolState] = useState<SessionToolState | null>(null);
+  const [loadingDefaultTools, setLoadingDefaultTools] = useState(false);
+  const [claudeInstallations, setClaudeInstallations] = useState<ClaudeInstallation[]>([]);
 
   useEffect(() => {
     window.localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(Array.from(favorites)));
@@ -61,6 +92,28 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
   useEffect(() => {
     window.localStorage.setItem(FAVICON_STORAGE_KEY, JSON.stringify(favicons));
   }, [favicons]);
+
+  useEffect(() => {
+    saveAppSettings(appSettings);
+  }, [appSettings]);
+
+  useEffect(() => {
+    if (activeNav !== "settings" || settingsTab !== "general" || claudeInstallations.length > 0) return;
+    invoke<ClaudeInstallation[]>("list_claude_installations")
+      .then((items) => {
+        setClaudeInstallations(items);
+        setAppSettings((current) => {
+          if (current.selectedClaudeInstallation) return current;
+          const selected = items.find((item) => item.is_selected) ?? items.find((item) => item.is_available) ?? items[0];
+          return selected
+            ? { ...current, selectedClaudeInstallation: selected.path }
+            : current;
+        });
+      })
+      .catch(() => {
+        setClaudeInstallations([]);
+      });
+  }, [activeNav, settingsTab, claudeInstallations.length]);
 
   useEffect(() => {
     const missing = workspaces.filter((w) => favicons[w.encoded_name] === undefined);
@@ -95,6 +148,86 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
       cancelled = true;
     };
   }, [workspaces, favicons]);
+
+  useEffect(() => {
+    if (activeNav !== "settings" || settingsTab !== "permissions" || defaultToolState || loadingDefaultTools) return;
+    const persisted = loadDefaultToolPolicy();
+    const cachedInventory = loadToolInventoryCache();
+
+    if (cachedInventory) {
+      const selectedTools = persisted
+        ? cachedInventory.availableTools.filter((tool) => persisted.selectedTools.includes(tool))
+        : cachedInventory.availableTools;
+      setDefaultToolState({
+        sessionId: null,
+        model: null,
+        cwd: cachedInventory.workspacePath,
+        availableTools: cachedInventory.availableTools,
+        selectedTools,
+        mcpServers: cachedInventory.mcpServers,
+      });
+      return;
+    }
+
+    const workspace = workspaces.find((item) => item.path_exists) ?? workspaces[0];
+
+    if (!workspace) {
+      setDefaultToolState(
+        persisted
+          ? {
+              sessionId: null,
+              model: null,
+              cwd: null,
+              availableTools: persisted.availableTools ?? persisted.selectedTools,
+              selectedTools: persisted.selectedTools,
+              mcpServers: persisted.mcpServers ?? [],
+            }
+          : null
+      );
+      return;
+    }
+
+    setLoadingDefaultTools(true);
+    invoke<ClaudeSessionInit>("get_claude_session_init", { workspacePath: workspace.decoded_path })
+      .then((init) => {
+        const availableTools = Array.isArray(init.tools) ? init.tools : [];
+        const mcpServers = extractMcpServers(init.mcp_servers);
+        const selectedTools = persisted
+          ? availableTools.filter((tool) => persisted.selectedTools.includes(tool))
+          : availableTools;
+        setDefaultToolState({
+          sessionId: init.session_id,
+          model: init.model,
+          cwd: init.cwd ?? workspace.decoded_path,
+          availableTools,
+          selectedTools,
+          mcpServers,
+        });
+        saveToolInventoryCache({
+          availableTools,
+          mcpServers,
+          workspacePath: workspace.decoded_path,
+        });
+        saveDefaultToolPolicy({
+          selectedTools,
+          availableTools,
+          mcpServers,
+        });
+      })
+      .catch(() => {
+        if (persisted) {
+          setDefaultToolState({
+            sessionId: null,
+            model: null,
+            cwd: null,
+            availableTools: persisted.availableTools ?? persisted.selectedTools,
+            selectedTools: persisted.selectedTools,
+            mcpServers: persisted.mcpServers ?? [],
+          });
+        }
+      })
+      .finally(() => setLoadingDefaultTools(false));
+  }, [activeNav, settingsTab, defaultToolState, loadingDefaultTools, workspaces]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
@@ -177,7 +310,10 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
         {/* Settings */}
         <Box px={14} pb={18}>
           <UnstyledButton
-            onClick={() => setActiveNav("usage")}
+            onClick={() => {
+              setActiveNav("settings");
+              setSettingsTab("general");
+            }}
             style={{
               display: "flex",
               alignItems: "center",
@@ -188,6 +324,7 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
               color: "#52525b",
               width: "fit-content",
               margin: "0 auto",
+              transition: "color 180ms ease, background 180ms ease",
             }}
             onMouseEnter={(e) => {
               (e.currentTarget as HTMLElement).style.color = "#a1a1aa";
@@ -206,7 +343,7 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
       <Box style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {mainHeader}
         {/* Top bar */}
-        {activeNav !== "usage" ? (
+        {activeNav !== "usage" && activeNav !== "settings" ? (
           <Box
             px={20}
             style={{
@@ -280,13 +417,66 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
               flexShrink: 0,
             }}
           >
-            <Text size="sm" fw={600} c="#e4e4e7">Claude Usage</Text>
+            <Text size="sm" fw={600} c="#e4e4e7">
+              {activeNav === "settings" ? "Settings" : "Claude Usage"}
+            </Text>
           </Box>
         )}
 
         {/* Project list */}
         {activeNav === "usage" ? (
           <UsageDashboardView />
+        ) : activeNav === "settings" ? (
+          <SettingsView
+            settingsTab={settingsTab}
+            onSettingsTabChange={setSettingsTab}
+            appSettings={appSettings}
+            onAppSettingsChange={setAppSettings}
+            claudeInstallations={claudeInstallations}
+            defaultToolState={defaultToolState}
+            loadingDefaultTools={loadingDefaultTools}
+            onToggleDefaultTool={(tool) => {
+              setDefaultToolState((current) => {
+                if (!current) return current;
+                const selectedTools = current.selectedTools.includes(tool)
+                  ? current.selectedTools.filter((item) => item !== tool)
+                  : [...current.selectedTools, tool].sort(
+                      (a, b) => current.availableTools.indexOf(a) - current.availableTools.indexOf(b)
+                    );
+                const next = { ...current, selectedTools };
+                saveDefaultToolPolicy({
+                  selectedTools,
+                  availableTools: current.availableTools,
+                  mcpServers: current.mcpServers,
+                });
+                return next;
+              });
+            }}
+            onEnableAllDefaultTools={() => {
+              setDefaultToolState((current) => {
+                if (!current) return current;
+                const next = { ...current, selectedTools: current.availableTools };
+                saveDefaultToolPolicy({
+                  selectedTools: next.selectedTools,
+                  availableTools: current.availableTools,
+                  mcpServers: current.mcpServers,
+                });
+                return next;
+              });
+            }}
+            onDisableAllDefaultTools={() => {
+              setDefaultToolState((current) => {
+                if (!current) return current;
+                const next = { ...current, selectedTools: [] };
+                saveDefaultToolPolicy({
+                  selectedTools: [],
+                  availableTools: current.availableTools,
+                  mcpServers: current.mcpServers,
+                });
+                return next;
+              });
+            }}
+          />
         ) : (
           <ScrollArea style={{ flex: 1 }}>
             {isLoading ? (
@@ -365,6 +555,420 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
   );
 }
 
+function SettingsView({
+  settingsTab,
+  onSettingsTabChange,
+  appSettings,
+  onAppSettingsChange,
+  claudeInstallations,
+  defaultToolState,
+  loadingDefaultTools,
+  onToggleDefaultTool,
+  onEnableAllDefaultTools,
+  onDisableAllDefaultTools,
+}: {
+  settingsTab: SettingsTab;
+  onSettingsTabChange: (value: SettingsTab) => void;
+  appSettings: AppSettings;
+  onAppSettingsChange: React.Dispatch<React.SetStateAction<AppSettings>>;
+  claudeInstallations: ClaudeInstallation[];
+  defaultToolState: SessionToolState | null;
+  loadingDefaultTools: boolean;
+  onToggleDefaultTool: (tool: string) => void;
+  onEnableAllDefaultTools: () => void;
+  onDisableAllDefaultTools: () => void;
+}) {
+  const { builtinTools, mcpGroups } = splitToolsBySource(defaultToolState?.availableTools ?? [], defaultToolState?.mcpServers ?? []);
+  const [expandedMcpGroups, setExpandedMcpGroups] = useState<Set<string>>(() => new Set());
+
+  const toggleGroupTools = (tools: string[], checked: boolean) => {
+    if (!tools.length) return;
+    if (checked) {
+      tools.forEach((tool) => {
+        if (!defaultToolState?.selectedTools.includes(tool)) onToggleDefaultTool(tool);
+      });
+      return;
+    }
+    tools.forEach((tool) => {
+      if (defaultToolState?.selectedTools.includes(tool)) onToggleDefaultTool(tool);
+    });
+  };
+
+  return (
+    <Box style={{ flex: 1, minHeight: 0, display: "flex" }}>
+      <Box
+        style={{
+          width: 220,
+          borderRight: "1px solid #1f1f23",
+          background: "#101015",
+          padding: 12,
+          flexShrink: 0,
+        }}
+      >
+        <Stack gap={4}>
+          <SettingsTabButton active={settingsTab === "general"} onClick={() => onSettingsTabChange("general")}>
+            General
+          </SettingsTabButton>
+          <SettingsTabButton active={settingsTab === "permissions"} onClick={() => onSettingsTabChange("permissions")}>
+            Permissions
+          </SettingsTabButton>
+          <SettingsTabButton active={settingsTab === "skills"} onClick={() => onSettingsTabChange("skills")}>
+            Skills
+          </SettingsTabButton>
+          <SettingsTabButton active={settingsTab === "hooks"} onClick={() => onSettingsTabChange("hooks")}>
+            Hooks
+          </SettingsTabButton>
+        </Stack>
+      </Box>
+      <ScrollArea style={{ flex: 1 }}>
+        <Box px={24} py={22} maw={860}>
+          {settingsTab === "general" ? (
+            <Stack gap={14}>
+              <SectionCard title="Claude Installation" description="Claude Code CLI is required to scan sessions and start new ones.">
+                <Box style={{ maxWidth: 420, position: "relative" }}>
+                  <select
+                    aria-label="Claude Installation"
+                    value={appSettings.selectedClaudeInstallation ?? ""}
+                    onChange={(event) => onAppSettingsChange((current) => ({
+                      ...current,
+                      selectedClaudeInstallation: event.target.value || null,
+                    }))}
+                    style={{
+                      width: "100%",
+                      appearance: "none",
+                      background: "#18181b",
+                      border: "1px solid #27272a",
+                      borderRadius: 10,
+                      padding: "10px 36px 10px 12px",
+                      fontSize: 13,
+                      color: "#e4e4e7",
+                      outline: "none",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    {claudeInstallations.length === 0 ? (
+                      <option value="">No Claude installations found</option>
+                    ) : (
+                      claudeInstallations.map((installation) => (
+                        <option key={installation.path} value={installation.path}>
+                          {installation.is_available ? installation.label : `${installation.label} (missing)`}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </Box>
+              </SectionCard>
+              <SectionCard title="Theme" description="Light mode can be selected now even though the UI still renders in dark mode.">
+                <Group gap={8}>
+                  <ModeButton
+                    active={appSettings.theme === "dark"}
+                    onClick={() => onAppSettingsChange((current) => ({ ...current, theme: "dark" }))}
+                  >
+                    Dark
+                  </ModeButton>
+                  <ModeButton
+                    active={appSettings.theme === "light"}
+                    onClick={() => onAppSettingsChange((current) => ({ ...current, theme: "light" }))}
+                  >
+                    Light
+                  </ModeButton>
+                </Group>
+              </SectionCard>
+              <SectionCard title="Remember Open Tabs" description="Restore the tabs from the previous session when Claudy opens again.">
+                <Switch
+                  checked={appSettings.rememberOpenTabs}
+                  onChange={(event) => onAppSettingsChange((current) => ({
+                    ...current,
+                    rememberOpenTabs: event.currentTarget.checked,
+                  }))}
+                  label={appSettings.rememberOpenTabs ? "Enabled" : "Disabled"}
+                  color="#FFE100"
+                />
+              </SectionCard>
+            </Stack>
+          ) : null}
+          {settingsTab === "permissions" ? (
+            <Stack gap={16}>
+              <Box>
+                <Text size="lg" fw={600} c="#f4f4f5">Default tool permissions</Text>
+                <Text size="sm" c="#71717a" mt={4}>
+                  These permissions are applied by default when a new session starts.
+                </Text>
+              </Box>
+              {loadingDefaultTools ? (
+                <Text size="sm" c="#a1a1aa">Loading default Claude tools…</Text>
+              ) : !defaultToolState ? (
+                <Text size="sm" c="#71717a">No tool information available yet.</Text>
+              ) : (
+                <>
+                  <Group gap={8}>
+                    <Button
+                      size="xs"
+                      variant="default"
+                      onClick={onEnableAllDefaultTools}
+                      styles={{
+                        root: { background: "#18181b", borderColor: "#2a2a32", color: "#e4e4e7" },
+                      }}
+                    >
+                      Enable all
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="default"
+                      onClick={onDisableAllDefaultTools}
+                      styles={{
+                        root: { background: "#18181b", borderColor: "#2a2a32", color: "#e4e4e7" },
+                      }}
+                    >
+                      Disable all
+                    </Button>
+                  </Group>
+                  <PermissionSection
+                    title={`Built-in Tools (${builtinTools.length})`}
+                    tools={builtinTools.map((tool) => ({ raw: tool, label: tool }))}
+                    selectedTools={defaultToolState.selectedTools}
+                    onToggle={onToggleDefaultTool}
+                  />
+                  {mcpGroups.map((group) => (
+                    <PermissionSection
+                      key={group.rawServer}
+                      title={group.label}
+                      tools={group.tools}
+                      selectedTools={defaultToolState.selectedTools}
+                      onToggle={onToggleDefaultTool}
+                      collapsible
+                      collapsed={!expandedMcpGroups.has(group.rawServer)}
+                      onToggleCollapsed={() => setExpandedMcpGroups((current) => {
+                        const next = new Set(current);
+                        if (next.has(group.rawServer)) next.delete(group.rawServer);
+                        else next.add(group.rawServer);
+                        return next;
+                      })}
+                      onToggleGroup={(checked) => toggleGroupTools(group.tools.map((tool) => tool.raw), checked)}
+                    />
+                  ))}
+                </>
+              )}
+            </Stack>
+          ) : null}
+          {settingsTab === "skills" ? <EmptySettingsPanel label="Skills" /> : null}
+          {settingsTab === "hooks" ? <EmptySettingsPanel label="Hooks" /> : null}
+        </Box>
+      </ScrollArea>
+    </Box>
+  );
+}
+
+function SettingsTabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <UnstyledButton
+      onClick={onClick}
+      style={{
+        width: "100%",
+        padding: "10px 12px",
+        borderRadius: 10,
+        background: active ? "#1b1b22" : "transparent",
+        border: `1px solid ${active ? "#2a2a32" : "transparent"}`,
+        color: active ? "#f4f4f5" : "#71717a",
+        textAlign: "left",
+        fontSize: 13,
+        fontWeight: 500,
+      }}
+    >
+      {children}
+    </UnstyledButton>
+  );
+}
+
+function SectionCard({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Box
+      style={{
+        padding: 16,
+        borderRadius: 14,
+        background: "#111115",
+        border: "1px solid #23232a",
+      }}
+    >
+      <Text size="sm" fw={600} c="#f4f4f5">{title}</Text>
+      <Text size="xs" c="#71717a" mt={4} mb={12}>{description}</Text>
+      {children}
+    </Box>
+  );
+}
+
+function ModeButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <UnstyledButton
+      onClick={onClick}
+      style={{
+        minWidth: 86,
+        height: 34,
+        borderRadius: 9,
+        border: `1px solid ${active ? "#3a3a45" : "#2a2a32"}`,
+        background: active ? "#1e1e24" : "#141419",
+        color: active ? "#f4f4f5" : "#a1a1aa",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 13,
+        fontWeight: 500,
+      }}
+    >
+      {children}
+    </UnstyledButton>
+  );
+}
+
+function PermissionSection({
+  title,
+  tools,
+  selectedTools,
+  onToggle,
+  collapsible,
+  collapsed,
+  onToggleCollapsed,
+  onToggleGroup,
+}: {
+  title: string;
+  tools: Array<{ raw: string; label: string }>;
+  selectedTools: string[];
+  onToggle: (tool: string) => void;
+  collapsible?: boolean;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
+  onToggleGroup?: (checked: boolean) => void;
+}) {
+  const selectedCount = tools.filter((tool) => selectedTools.includes(tool.raw)).length;
+  const allChecked = tools.length > 0 && selectedCount === tools.length;
+  const partiallyChecked = selectedCount > 0 && selectedCount < tools.length;
+
+  return (
+    <Box>
+      <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
+        <Box style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {onToggleGroup ? (
+            <GroupToggleCheckbox
+              label={title}
+              checked={allChecked}
+              indeterminate={partiallyChecked}
+              onChange={onToggleGroup}
+            />
+          ) : (
+            <Text size="xs" fw={600} c="#a1a1aa">{title}</Text>
+          )}
+        </Box>
+        {collapsible ? (
+          <UnstyledButton
+            onClick={onToggleCollapsed}
+            style={{ color: "#71717a", display: "flex", alignItems: "center", justifyContent: "center" }}
+            aria-label={`${collapsed ? "Expand" : "Collapse"} ${title}`}
+          >
+            <ChevronDown size={14} strokeWidth={2} style={{ transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform 180ms ease" }} />
+          </UnstyledButton>
+        ) : null}
+      </Box>
+      {!collapsed ? (
+        tools.length === 0 ? (
+          <Text size="xs" c="#52525b">No tools available.</Text>
+        ) : (
+          <Box style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {tools.map((tool) => {
+              const checked = selectedTools.includes(tool.raw);
+              return (
+                <label
+                  key={tool.raw}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "6px 10px",
+                    borderRadius: 999,
+                    border: `1px solid ${checked ? "#3f3f46" : "#27272a"}`,
+                    background: checked ? "#18181b" : "#0f1014",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    aria-label={tool.label}
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onToggle(tool.raw)}
+                    style={{ margin: 0 }}
+                  />
+                  <Text size="xs" c={checked ? "#ffffff" : "#e4e4e7"}>{tool.label}</Text>
+                </label>
+              );
+            })}
+          </Box>
+        )
+      ) : null}
+    </Box>
+  );
+}
+
+function GroupToggleCheckbox({
+  label,
+  checked,
+  indeterminate,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  indeterminate: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+      <input
+        aria-label={label}
+        type="checkbox"
+        checked={checked}
+        ref={(node) => {
+          if (node) node.indeterminate = indeterminate;
+        }}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+        style={{ margin: 0 }}
+      />
+      <Text size="xs" fw={600} c="#a1a1aa">{label}</Text>
+    </label>
+  );
+}
+
+function EmptySettingsPanel({ label }: { label: string }) {
+  return (
+    <Box
+      style={{
+        minHeight: 280,
+        borderRadius: 16,
+        border: "1px dashed #2a2a32",
+        background: "#101015",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Text size="sm" c="#52525b">{label} will live here.</Text>
+    </Box>
+  );
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function NavButton({
@@ -390,7 +994,7 @@ function NavButton({
         fontSize: 13,
         fontWeight: active ? 500 : 400,
         color: active ? "#f0f0f2" : hovered ? "#a1a1aa" : "#71717a",
-        transition: "background 100ms, color 100ms",
+        transition: "background 180ms ease, color 180ms ease, border-color 180ms ease",
         background: active ? "#1e1e24" : hovered ? "#18181b" : "transparent",
         border: active ? "1px solid" : "1px solid transparent",
         borderColor: active ? "#2a2a32" : "transparent",

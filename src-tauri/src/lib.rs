@@ -41,6 +41,14 @@ pub struct ClaudeAccountInfo {
     pub organization_role: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ClaudeInstallation {
+    pub label: String,
+    pub path: String,
+    pub is_available: bool,
+    pub is_selected: bool,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct ClaudePlanUsageBucket {
     pub percent_used: Option<f64>,
@@ -542,6 +550,58 @@ fn claude_binary_and_path() -> (String, String) {
         });
 
     (claude_bin, full_path)
+}
+
+fn claude_candidates() -> Vec<String> {
+    let home = dirs_next::home_dir().unwrap_or_default();
+
+    #[cfg(windows)]
+    let candidates = vec![
+        home.join(".local").join("bin").join("claude.exe").to_string_lossy().to_string(),
+        home.join(".local").join("bin").join("claude.cmd").to_string_lossy().to_string(),
+        home.join(".local").join("bin").join("claude").to_string_lossy().to_string(),
+        home.join("AppData").join("Roaming").join("npm").join("claude.cmd").to_string_lossy().to_string(),
+        home.join("AppData").join("Roaming").join("npm").join("claude.exe").to_string_lossy().to_string(),
+        home.join("AppData").join("Roaming").join("npm").join("claude").to_string_lossy().to_string(),
+        "claude.cmd".to_string(),
+        "claude.exe".to_string(),
+        "claude".to_string(),
+    ];
+
+    #[cfg(not(windows))]
+    let candidates = vec![
+        home.join(".local").join("bin").join("claude").to_string_lossy().to_string(),
+        "/usr/local/bin/claude".to_string(),
+        "/opt/homebrew/bin/claude".to_string(),
+        "claude".to_string(),
+    ];
+
+    candidates
+}
+
+#[tauri::command]
+fn list_claude_installations() -> Vec<ClaudeInstallation> {
+    let (selected_bin, _) = claude_binary_and_path();
+    let mut seen = std::collections::HashSet::<String>::new();
+
+    claude_candidates()
+        .into_iter()
+        .filter(|candidate| seen.insert(candidate.clone()))
+        .map(|candidate| {
+            let is_lookup = !candidate.contains(std::path::MAIN_SEPARATOR) && !candidate.contains('/');
+            let is_available = if is_lookup {
+                true
+            } else {
+                Path::new(&candidate).exists()
+            };
+            ClaudeInstallation {
+                label: if is_lookup { format!("PATH lookup ({candidate})") } else { candidate.clone() },
+                path: candidate.clone(),
+                is_available,
+                is_selected: candidate == selected_bin,
+            }
+        })
+        .collect()
 }
 
 fn parse_interval_cutoff(interval: &str) -> Option<String> {
@@ -2027,6 +2087,7 @@ pub fn run() {
             delete_session_file,
             get_session_messages,
             get_claude_account_info,
+            list_claude_installations,
             get_claude_session_init,
             get_claude_plan_usage,
             get_usage_dashboard,

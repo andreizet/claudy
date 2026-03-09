@@ -36,7 +36,29 @@ describe("HomeView behavior", () => {
     window.localStorage.clear();
     invokeMock.mockReset();
     openMock.mockReset();
-    invokeMock.mockResolvedValue(null);
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "list_claude_installations":
+          return Promise.resolve([
+            {
+              label: "/usr/local/bin/claude",
+              path: "/usr/local/bin/claude",
+              is_available: true,
+              is_selected: true,
+            },
+          ]);
+        case "get_claude_session_init":
+          return Promise.resolve({
+            session_id: "session-init",
+            cwd: mockWorkspace.decoded_path,
+            model: "sonnet",
+            tools: ["Read", "Edit", "Bash", "mcp__github__issues"],
+            mcp_servers: ["github"],
+          });
+        default:
+          return Promise.resolve(null);
+      }
+    });
   });
 
   it("hydrates favorites from localStorage and persists toggles", async () => {
@@ -122,5 +144,48 @@ describe("HomeView behavior", () => {
 
     await waitFor(() => expect(openMock).toHaveBeenCalledTimes(1));
     expect(onCreateSession).toHaveBeenCalledWith("/tmp/picked-folder");
+  });
+
+  it("opens the settings page and persists general settings", async () => {
+    renderWithProviders(
+      <HomeView
+        workspaces={workspaces}
+        isLoading={false}
+        accountInfo={null}
+        onOpenWorkspace={() => {}}
+        onCreateSession={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(screen.getByText("Claude Installation")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Claude Installation" })).toBeInTheDocument();
+    expect(screen.getByText("Remember Open Tabs")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("switch", { name: "Enabled" }));
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem("claudy.appSettings")).toContain("\"rememberOpenTabs\":false");
+    });
+  });
+
+  it("shows default tool permissions under settings", async () => {
+    renderWithProviders(
+      <HomeView
+        workspaces={workspaces}
+        isLoading={false}
+        accountInfo={null}
+        onOpenWorkspace={() => {}}
+        onCreateSession={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Permissions" }));
+
+    await waitFor(() => expect(screen.getByText("Default tool permissions")).toBeInTheDocument());
+    expect(screen.getByText("Built-in Tools (3)")).toBeInTheDocument();
+    expect(screen.getByText("github")).toBeInTheDocument();
   });
 });

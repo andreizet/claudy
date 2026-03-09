@@ -46,6 +46,29 @@ body,
   opacity: 1 !important;
 }
 
+.tool-card__content {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 220ms cubic-bezier(0.2, 1, 0.22, 1), opacity 180ms ease;
+}
+
+.tool-card__content.is-expanded {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.tool-card__content-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-tab-close:hover {
+  color: #f87171 !important;
+  background: rgba(248, 113, 113, 0.12);
+  transform: scale(1.04);
+}
+
 .splash-screen {
   position: relative;
   display: flex;

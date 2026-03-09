@@ -674,12 +674,14 @@ function ToolCard({ block, result }: { block: ContentBlockToolUse; result?: { co
 
   return (
     <Box
+      className="tool-card"
       style={{
         borderRadius: 8,
         background: "#18181b",
         border: `1px solid ${result?.isError ? "#4d1f1f" : "#27272a"}`,
         maxWidth: "88%",
         overflow: "hidden",
+        transition: "border-color 180ms ease, background 180ms ease",
       }}
     >
       {/* Header row */}
@@ -691,6 +693,7 @@ function ToolCard({ block, result }: { block: ContentBlockToolUse; result?: { co
           gap: 10,
           padding: "7px 12px",
           cursor: canExpand ? "pointer" : "default",
+          transition: "background 180ms ease, color 180ms ease",
         }}
       >
         <ToolIcon name={block.name} />
@@ -712,8 +715,9 @@ function ToolCard({ block, result }: { block: ContentBlockToolUse; result?: { co
       </Box>
 
       {/* Expanded body */}
-      {expanded && (
-        <Box style={{ borderTop: "1px solid #27272a" }}>
+      {canExpand && (
+        <Box className={`tool-card__content ${expanded ? "is-expanded" : ""}`}>
+          <Box className="tool-card__content-inner" style={{ borderTop: "1px solid #27272a" }}>
           {isEdit ? (
             edits.map((edit, i) => (
               <Box key={i}>
@@ -799,6 +803,7 @@ function ToolCard({ block, result }: { block: ContentBlockToolUse; result?: { co
               )}
             </>
           )}
+          </Box>
         </Box>
       )}
     </Box>

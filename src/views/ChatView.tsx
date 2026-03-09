@@ -21,6 +21,18 @@ import { FitAddon } from "@xterm/addon-fit";
 import { ClaudeAccountInfo, DiscoveredWorkspace, DiscoveredSession, JsonlRecord } from "../types";
 import MessageList from "../components/chat/MessageList";
 import { md5 } from "../shared/md5";
+import {
+  extractMcpServers,
+  loadDefaultToolPolicy,
+  loadSessionToolPolicy,
+  loadToolInventoryCache,
+  PersistedToolPolicy,
+  saveDefaultToolPolicy,
+  saveSessionToolPolicy,
+  saveToolInventoryCache,
+  SessionToolState,
+  splitToolsBySource,
+} from "../shared/toolPolicy";
 
 interface Props {
   workspace: DiscoveredWorkspace;
@@ -31,7 +43,6 @@ interface Props {
 }
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 const PINNED_SESSION_STORAGE_KEY = "claudy.pinnedSessions";
-const TOOL_POLICY_STORAGE_KEY = "claudy.toolPolicies";
 const SESSION_NAME_STORAGE_KEY = "claudy.sessionNames";
 const BUILTIN_SLASH_COMMANDS: SlashCommandOption[] = [
   { name: "add-dir", description: "Add additional working directories.", source: "builtin" },
@@ -75,27 +86,12 @@ interface PendingSendContext {
   allowedTools?: string[];
 }
 
-interface SessionToolState {
-  sessionId: string | null;
-  model: string | null;
-  cwd: string | null;
-  availableTools: string[];
-  selectedTools: string[];
-  mcpServers: string[];
-}
-
 interface ClaudeSessionInit {
   session_id: string | null;
   cwd: string | null;
   model: string | null;
   tools: string[];
   mcp_servers: unknown;
-}
-
-interface PersistedToolPolicy {
-  selectedTools: string[];
-  availableTools?: string[];
-  mcpServers?: string[];
 }
 
 function shortenPath(fullPath: string): string {
@@ -138,88 +134,6 @@ function findActiveTrigger(value: string, caret: number) {
     query,
     start: beforeCaret.length - query.length - 1,
     end: caret,
-  };
-}
-
-function normalizeKey(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function prettifyMcpServerName(rawServer: string, mcpServers: string[]): string {
-  const normalizedRaw = normalizeKey(rawServer);
-  const matched = mcpServers.find((server) => normalizeKey(server) === normalizedRaw);
-  if (matched) return matched;
-  return rawServer.replace(/_/g, " ");
-}
-
-function extractMcpServers(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.flatMap((server) => {
-      if (typeof server === "string") return [server];
-      if (!server || typeof server !== "object") return [];
-      const candidate = server as Record<string, unknown>;
-      const directName = [candidate.name, candidate.display_name, candidate.server_name, candidate.id]
-        .find((item): item is string => typeof item === "string" && item.trim().length > 0);
-      if (directName) return [directName];
-      return [];
-    });
-  }
-
-  if (value && typeof value === "object") {
-    return Object.entries(value as Record<string, unknown>).flatMap(([key, server]) => {
-      if (typeof server === "string") return [server];
-      if (server && typeof server === "object") {
-        const candidate = server as Record<string, unknown>;
-        const directName = [candidate.name, candidate.display_name, candidate.server_name, candidate.id]
-          .find((item): item is string => typeof item === "string" && item.trim().length > 0);
-        if (directName) return [directName];
-      }
-      return [key];
-    });
-  }
-
-  return [];
-}
-
-function splitToolsBySource(availableTools: string[], mcpServers: string[]) {
-  const builtinTools: string[] = [];
-  const mcpGroups = new Map<string, { label: string; rawServer: string; tools: Array<{ raw: string; label: string }> }>();
-
-  for (const tool of availableTools) {
-    const match = tool.match(/^mcp__([^_].*?)__(.+)$/);
-    if (!match) {
-      builtinTools.push(tool);
-      continue;
-    }
-
-    const rawServer = match[1];
-    const rawTool = match[2];
-    const group = mcpGroups.get(rawServer) ?? {
-      label: prettifyMcpServerName(rawServer, mcpServers),
-      rawServer,
-      tools: [],
-    };
-    group.tools.push({ raw: tool, label: rawTool });
-    mcpGroups.set(rawServer, group);
-  }
-
-  for (const server of mcpServers) {
-    const existingGroup = Array.from(mcpGroups.values()).find((group) => (
-      normalizeKey(group.rawServer) === normalizeKey(server)
-      || normalizeKey(group.label) === normalizeKey(server)
-    ));
-    if (existingGroup) continue;
-    const rawServer = server.replace(/\s+/g, "_");
-    mcpGroups.set(rawServer, {
-      label: server,
-      rawServer,
-      tools: [],
-    });
-  }
-
-  return {
-    builtinTools,
-    mcpGroups: Array.from(mcpGroups.values()).sort((a, b) => a.label.localeCompare(b.label)),
   };
 }
 
@@ -267,17 +181,6 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
   const interactiveWrittenLengthRef = useRef(0);
   const pendingSendRef = useRef<PendingSendContext | null>(null);
 
-  const persistToolPolicy = (policy: PersistedToolPolicy) => {
-    try {
-      const raw = window.localStorage.getItem(TOOL_POLICY_STORAGE_KEY);
-      const parsed = raw ? (JSON.parse(raw) as Record<string, PersistedToolPolicy>) : {};
-      parsed[workspace.encoded_name] = policy;
-      window.localStorage.setItem(TOOL_POLICY_STORAGE_KEY, JSON.stringify(parsed));
-    } catch {
-      // Ignore storage errors.
-    }
-  };
-
   const loadSessionNames = () => {
     try {
       const raw = window.localStorage.getItem(SESSION_NAME_STORAGE_KEY);
@@ -309,44 +212,73 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     return customNames[session.id]?.trim() || session.first_message || "Empty session";
   };
 
-  const loadPersistedToolPolicy = () => {
-    try {
-      const raw = window.localStorage.getItem(TOOL_POLICY_STORAGE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as Record<string, PersistedToolPolicy>;
-      const value = parsed[workspace.encoded_name];
-      if (!value || !Array.isArray(value.selectedTools)) return null;
-      return value;
-    } catch {
-      return null;
-    }
+  const loadPersistedToolPolicy = (sessionId?: string | null) => {
+    return loadSessionToolPolicy(sessionId ?? null) ?? loadDefaultToolPolicy();
+  };
+
+  const buildSessionToolState = ({
+    sessionId,
+    model,
+    cwd,
+    availableTools,
+    mcpServers,
+    preferredTools,
+  }: {
+    sessionId: string | null;
+    model: string | null;
+    cwd: string | null;
+    availableTools: string[];
+    mcpServers: string[];
+    preferredTools?: string[] | null;
+  }): SessionToolState => {
+    const selectedTools = preferredTools
+      ? availableTools.filter((tool) => preferredTools.includes(tool))
+      : availableTools;
+    return {
+      sessionId,
+      model,
+      cwd,
+      availableTools,
+      selectedTools,
+      mcpServers,
+    };
   };
 
   const applySessionInit = (init: ClaudeSessionInit) => {
     const tools = Array.isArray(init.tools) ? init.tools : [];
     const mcpServers = extractMcpServers(init.mcp_servers);
-    const persistedPolicy = loadPersistedToolPolicy();
-    const selectedTools = persistedPolicy
-      ? tools.filter((tool) => persistedPolicy.selectedTools.includes(tool))
-      : tools;
-    persistToolPolicy({
-      selectedTools,
+    saveToolInventoryCache({
       availableTools: tools,
       mcpServers,
+      workspacePath: workspace.decoded_path,
     });
-    setSessionToolState({
+    const persistedPolicy = loadPersistedToolPolicy(init.session_id);
+    setSessionToolState(buildSessionToolState({
       sessionId: init.session_id,
       model: init.model,
       cwd: init.cwd ?? workspace.decoded_path,
       availableTools: tools,
-      selectedTools,
       mcpServers,
-    });
+      preferredTools: pendingSendRef.current?.allowedTools ?? persistedPolicy?.selectedTools ?? null,
+    }));
   };
 
-  const fetchSessionSettings = async () => {
+  const fetchSessionSettings = async (sessionId?: string | null) => {
     setLoadingSessionSettings(true);
     try {
+      const cachedInventory = loadToolInventoryCache();
+      if (cachedInventory) {
+        const persistedPolicy = loadPersistedToolPolicy(sessionId ?? activeSession?.id ?? null);
+        setSessionToolState(buildSessionToolState({
+          sessionId: sessionId ?? activeSession?.id ?? null,
+          model: sessionToolState?.model ?? null,
+          cwd: workspace.decoded_path,
+          availableTools: cachedInventory.availableTools,
+          mcpServers: cachedInventory.mcpServers,
+          preferredTools: persistedPolicy?.selectedTools ?? null,
+        }));
+        return;
+      }
       const init = await invoke<ClaudeSessionInit>("get_claude_session_init", {
         workspacePath: workspace.decoded_path,
       });
@@ -449,15 +381,21 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     const pinnedSession = pinnedId ? sessions.find((session) => session.id === pinnedId) ?? null : null;
     setActiveSession(pinnedSession ?? sessions[0] ?? null);
     const persistedPolicy = loadPersistedToolPolicy();
+    const cachedInventory = loadToolInventoryCache();
+    const selectedSession = pinnedSession ?? sessions[0] ?? null;
     setSessionToolState(
-      persistedPolicy
+      persistedPolicy || cachedInventory
         ? {
-            sessionId: pinnedSession?.id ?? sessions[0]?.id ?? null,
+            sessionId: selectedSession?.id ?? null,
             model: null,
             cwd: workspace.decoded_path,
-            availableTools: persistedPolicy.availableTools ?? persistedPolicy.selectedTools,
-            selectedTools: persistedPolicy.selectedTools,
-            mcpServers: persistedPolicy.mcpServers ?? [],
+            availableTools: cachedInventory?.availableTools ?? persistedPolicy?.availableTools ?? persistedPolicy?.selectedTools ?? [],
+            selectedTools: (() => {
+              const availableTools = cachedInventory?.availableTools ?? persistedPolicy?.availableTools ?? persistedPolicy?.selectedTools ?? [];
+              const preferredTools = loadPersistedToolPolicy(selectedSession?.id)?.selectedTools ?? persistedPolicy?.selectedTools ?? [];
+              return availableTools.filter((tool) => preferredTools.includes(tool));
+            })(),
+            mcpServers: cachedInventory?.mcpServers ?? persistedPolicy?.mcpServers ?? [],
           }
         : null
     );
@@ -505,14 +443,33 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
 
   useEffect(() => {
     if (!activeSession || sessionToolState || loadingSessionSettings || initializingNewSession) return;
-    void fetchSessionSettings();
+    void fetchSessionSettings(activeSession.id);
   }, [activeSession, initializingNewSession, loadingSessionSettings, sessionToolState]);
+
+  useEffect(() => {
+    const cachedInventory = loadToolInventoryCache();
+    if (!cachedInventory || !activeSession) return;
+    const persistedPolicy = loadPersistedToolPolicy(activeSession.id);
+    setSessionToolState((current) => {
+      if (current?.sessionId === activeSession.id && current.availableTools.join("|") === cachedInventory.availableTools.join("|")) {
+        return current;
+      }
+      return buildSessionToolState({
+        sessionId: activeSession.id,
+        model: current?.model ?? null,
+        cwd: workspace.decoded_path,
+        availableTools: cachedInventory.availableTools,
+        mcpServers: cachedInventory.mcpServers,
+        preferredTools: persistedPolicy?.selectedTools ?? null,
+      });
+    });
+  }, [activeSession?.id, workspace.decoded_path]);
 
   const openSessionSettings = () => {
     setSessionSettingsSnapshot(sessionToolState ? { ...sessionToolState, selectedTools: [...sessionToolState.selectedTools], availableTools: [...sessionToolState.availableTools], mcpServers: [...sessionToolState.mcpServers] } : null);
     setSessionSettingsOpen(true);
     if (!sessionToolState && !loadingSessionSettings) {
-      void fetchSessionSettings();
+      void fetchSessionSettings(activeSession?.id ?? null);
     }
   };
 
@@ -529,8 +486,8 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
   };
 
   const saveSessionSettings = () => {
-    if (sessionToolState) {
-      persistToolPolicy({
+    if (sessionToolState && activeSession?.id) {
+      saveSessionToolPolicy(activeSession.id, {
         selectedTools: sessionToolState.selectedTools,
         availableTools: sessionToolState.availableTools,
         mcpServers: sessionToolState.mcpServers,
@@ -737,21 +694,23 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
             ? rec.tools.filter((tool: unknown): tool is string => typeof tool === "string")
             : [];
           const mcpServers = extractMcpServers(rec.mcp_servers);
-          const persistedPolicy = loadPersistedToolPolicy();
-          const selectedTools = persistedPolicy
-            ? availableTools.filter((tool) => persistedPolicy.selectedTools.includes(tool))
-            : availableTools;
-          persistToolPolicy({
-            selectedTools,
+          saveToolInventoryCache({
             availableTools,
             mcpServers,
+            workspacePath: workspace.decoded_path,
           });
+          const sessionId = typeof rec.session_id === "string" ? rec.session_id : activeSession?.id ?? null;
+          const sessionPolicy = loadSessionToolPolicy(sessionId);
+          const defaultPolicy = loadDefaultToolPolicy();
           const nextState = {
-            sessionId: typeof rec.session_id === "string" ? rec.session_id : activeSession?.id ?? null,
+            sessionId,
             model: typeof rec.model === "string" ? rec.model : null,
             cwd: typeof rec.cwd === "string" ? rec.cwd : null,
             availableTools,
-            selectedTools,
+            selectedTools: availableTools.filter((tool: string) => (
+              (sessionPolicy?.selectedTools ?? pendingSendRef.current?.allowedTools ?? defaultPolicy?.selectedTools ?? availableTools)
+                .includes(tool)
+            )),
             mcpServers,
           };
           setSessionToolState((current) => {
@@ -1621,6 +1580,7 @@ export function SessionItem({
         alignItems: "center",
         gap: 8,
         cursor: "pointer",
+        transition: "background 180ms ease, border-color 180ms ease",
       }}
     >
       {confirmingDelete ? (
@@ -1682,7 +1642,7 @@ export function SessionItem({
               size="xs"
               fw={active ? 500 : 400}
               c={active ? "#f4f4f5" : hovered ? "#d4d4d8" : "#b4b4bd"}
-              style={{ flex: 1, minWidth: 0, lineHeight: 1.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              style={{ flex: 1, minWidth: 0, lineHeight: 1.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", transition: "color 180ms ease" }}
             >
               {title}
             </Text>
@@ -1741,7 +1701,7 @@ function ActionIconButton({
         flexShrink: 0,
         color: active ? "#FFE100" : visible ? "#71717a" : "transparent",
         opacity: visible ? 1 : 0,
-        transition: "opacity 120ms, color 120ms",
+        transition: "opacity 180ms ease, color 180ms ease, transform 180ms ease",
       }}
     >
       {children}
@@ -1773,6 +1733,13 @@ function SessionSettingsOverlay({
   onSave: () => void;
 }) {
   const { builtinTools, mcpGroups } = splitToolsBySource(state?.availableTools ?? [], state?.mcpServers ?? []);
+  const toggleGroupTools = (tools: string[], checked: boolean) => {
+    tools.forEach((tool) => {
+      const isSelected = state?.selectedTools.includes(tool) ?? false;
+      if (checked && !isSelected) onToggleTool(tool);
+      if (!checked && isSelected) onToggleTool(tool);
+    });
+  };
   return (
     <Box
       style={{
@@ -1893,7 +1860,14 @@ function SessionSettingsOverlay({
                 <Box style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 8 }}>
                   {mcpGroups.map((group) => (
                     <Box key={group.rawServer}>
-                      <Text size="xs" c="#a1a1aa" mb={6}>{group.label}</Text>
+                      <Box style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <GroupToggleCheckbox
+                          label={group.label}
+                          checked={group.tools.length > 0 && group.tools.every((tool) => state.selectedTools.includes(tool.raw))}
+                          indeterminate={group.tools.some((tool) => state.selectedTools.includes(tool.raw)) && !group.tools.every((tool) => state.selectedTools.includes(tool.raw))}
+                          onChange={(checked) => toggleGroupTools(group.tools.map((tool) => tool.raw), checked)}
+                        />
+                      </Box>
                       {group.tools.length > 0 ? (
                         <Box style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                           {group.tools.map((tool) => {
@@ -2107,4 +2081,32 @@ function TrashIcon() {
 
 function CloseIcon() {
   return <X size={12} strokeWidth={2} />;
+}
+
+function GroupToggleCheckbox({
+  label,
+  checked,
+  indeterminate,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  indeterminate: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+      <input
+        aria-label={label}
+        type="checkbox"
+        checked={checked}
+        ref={(node) => {
+          if (node) node.indeterminate = indeterminate;
+        }}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+        style={{ margin: 0 }}
+      />
+      <Text size="xs" c="#a1a1aa">{label}</Text>
+    </label>
+  );
 }

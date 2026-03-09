@@ -160,4 +160,20 @@ describe("App tab and session flow", () => {
     expect(screen.getByText("claudy - Implement the login flow")).toBeInTheDocument();
     expect(screen.getByText("New")).toBeInTheDocument();
   });
+
+  it("does not restore saved tabs when remember open tabs is disabled", async () => {
+    window.localStorage.setItem("claudy.appSettings", JSON.stringify({ rememberOpenTabs: false, theme: "dark" }));
+    window.localStorage.setItem(
+      "claudy.openTabs",
+      JSON.stringify([
+        { id: "tab-1", kind: "chat", workspace: workspaceA, sessionTitle: workspaceA.sessions[0]?.first_message ?? null },
+      ])
+    );
+    window.localStorage.setItem("claudy.activeTabId", "tab-1");
+
+    renderWithProviders(<App />);
+
+    await waitFor(() => expect(screen.getByText("home-view")).toBeInTheDocument());
+    expect(screen.queryByText("chat-claudy")).not.toBeInTheDocument();
+  });
 });

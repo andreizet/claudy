@@ -4,6 +4,8 @@ import { Folder, Plus, X } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "./types";
+import { ACTIVE_TAB_STORAGE_KEY, loadAppSettings, OPEN_TABS_STORAGE_KEY } from "./shared/settings";
+import { extractMcpServers, loadToolInventoryCache, saveToolInventoryCache } from "./shared/toolPolicy";
 import HomeView from "./views/HomeView";
 import ChatView from "./views/ChatView";
 import SplashScreen from "./components/SplashScreen";
@@ -12,8 +14,14 @@ type AppTab =
   | { id: string; kind: "home" }
   | { id: string; kind: "chat"; workspace: DiscoveredWorkspace; sessionTitle: string | null };
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
-const OPEN_TABS_STORAGE_KEY = "claudy.openTabs";
-const ACTIVE_TAB_STORAGE_KEY = "claudy.activeTabId";
+
+interface ClaudeSessionInit {
+  session_id: string | null;
+  cwd: string | null;
+  model: string | null;
+  tools: string[];
+  mcp_servers: unknown;
+}
 
 function createTabId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -40,6 +48,9 @@ function isDiscoveredWorkspace(value: unknown): value is DiscoveredWorkspace {
 
 function loadStoredTabs(): { tabs: AppTab[]; activeTabId: string | null } {
   try {
+    if (!loadAppSettings().rememberOpenTabs) {
+      return { tabs: [createHomeTab()], activeTabId: null };
+    }
     const rawTabs = window.localStorage.getItem(OPEN_TABS_STORAGE_KEY);
     const rawActiveTabId = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
     if (!rawTabs) {
@@ -198,7 +209,32 @@ export default function App() {
   }, [tabs, favicons]);
 
   useEffect(() => {
+    if (loadToolInventoryCache()) return;
+    const workspace = workspaces.find((item) => item.path_exists) ?? workspaces[0];
+    if (!workspace) return;
+    invoke<ClaudeSessionInit>("get_claude_session_init", {
+      workspacePath: workspace.decoded_path,
+    })
+      .then((init) => {
+        saveToolInventoryCache({
+          availableTools: Array.isArray(init.tools) ? init.tools : [],
+          mcpServers: extractMcpServers(init.mcp_servers),
+          workspacePath: workspace.decoded_path,
+        });
+      })
+      .catch(() => {
+        // Ignore startup inventory failures.
+      });
+  }, [workspaces]);
+
+  useEffect(() => {
     try {
+      const settings = loadAppSettings();
+      if (!settings.rememberOpenTabs) {
+        window.localStorage.removeItem(OPEN_TABS_STORAGE_KEY);
+        window.localStorage.removeItem(ACTIVE_TAB_STORAGE_KEY);
+        return;
+      }
       window.localStorage.setItem(OPEN_TABS_STORAGE_KEY, JSON.stringify(tabs));
       window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, activeTabId);
     } catch {
@@ -283,6 +319,7 @@ export default function App() {
         return (
           <Box
             key={tab.id}
+            className="app-tab"
             style={{
               minWidth: 140,
               maxWidth: 220,
@@ -291,10 +328,12 @@ export default function App() {
               background: active ? "#171a20" : "#12151b",
               display: "flex",
               alignItems: "center",
+              transition: "background 180ms ease, border-color 180ms ease",
             }}
           >
             <UnstyledButton
               onClick={() => setActiveTabId(tab.id)}
+              className="app-tab__button"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -304,6 +343,7 @@ export default function App() {
                 padding: "0 10px",
                 height: "100%",
                 color: active ? "#f4f4f5" : "#a1a1aa",
+                transition: "color 180ms ease",
               }}
             >
               {tab.kind === "chat" && (
@@ -318,7 +358,7 @@ export default function App() {
                   <Folder size={14} strokeWidth={1.7} style={{ color: "#71717a", flexShrink: 0 }} />
                 )
               )}
-              <Text size="sm" fw={active ? 600 : 500} truncate>
+              <Text size="14px" fw={active ? 600 : 500} truncate>
                 {label}
               </Text>
             </UnstyledButton>
@@ -326,6 +366,7 @@ export default function App() {
               onClick={() => closeTab(tab.id)}
               aria-label={`Close ${label} tab`}
               title={`Close ${label} tab`}
+              className="app-tab-close"
               style={{
                 width: 24,
                 height: 24,
@@ -336,6 +377,7 @@ export default function App() {
                 alignItems: "center",
                 justifyContent: "center",
                 flexShrink: 0,
+                transition: "color 180ms ease, background 180ms ease, transform 180ms ease",
               }}
             >
               <X size={14} strokeWidth={2} />

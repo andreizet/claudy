@@ -79,7 +79,7 @@ export default function ProjectListItem({ workspace, faviconDataUrl, isFavorite,
         cursor: isMissing ? "default" : "pointer",
         background: hovered && !isMissing ? "#18181b" : "transparent",
         opacity: isMissing ? 0.4 : 1,
-        transition: "background 100ms",
+        transition: "background 180ms ease, opacity 180ms ease",
       }}
     >
       {/* Avatar */}
@@ -164,6 +164,7 @@ export default function ProjectListItem({ workspace, faviconDataUrl, isFavorite,
               color: isFavorite ? "#FFE100" : "#71717a",
               cursor: "pointer",
               padding: 0,
+              transition: "color 180ms ease, transform 180ms ease",
             }}
           >
             <Star size={14} strokeWidth={1.8} fill={isFavorite ? "currentColor" : "none"} />
