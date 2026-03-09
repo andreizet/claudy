@@ -53,6 +53,7 @@ interface Props {
 }
 
 export default function MessageList({ messages, streamText, showGenerating, pendingUserText, sessionId, userAvatarUrl }: Props) {
+  const renderStart = performance.now();
   const viewportRef = useRef<HTMLDivElement>(null);
   const [atTop, setAtTop] = useState(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -101,6 +102,7 @@ export default function MessageList({ messages, streamText, showGenerating, pend
     findVisibleEndIndex(offsets, itemHeights, items, scrollTop + viewportHeight) + VIRTUAL_OVERSCAN
   );
   const visibleItems = items.slice(startIndex, endIndex);
+  const shouldVirtualize = items.length > 80;
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -207,17 +209,32 @@ export default function MessageList({ messages, streamText, showGenerating, pend
     <Box style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
     <ScrollArea h="100%" viewportRef={viewportRef}>
       <Box style={{ padding: "24px 32px" }}>
-        <Box style={{ height: totalHeight, position: "relative" }}>
-          {visibleItems.map((item, index) => {
-            const actualIndex = startIndex + index;
-            return (
-              <MeasuredItem
-                key={item.key}
-                top={offsets[actualIndex]}
-                onHeightChange={(height) => {
-                  setItemHeights((current) => (current[actualIndex] === height ? current : { ...current, [actualIndex]: height }));
-                }}
-              >
+        {shouldVirtualize ? (
+          <Box style={{ height: totalHeight, position: "relative" }}>
+            {visibleItems.map((item, index) => {
+              const actualIndex = startIndex + index;
+              return (
+                <MeasuredItem
+                  key={item.key}
+                  itemIndex={actualIndex}
+                  top={offsets[actualIndex]}
+                  setItemHeights={setItemHeights}
+                >
+                  {item.kind === "message" ? (
+                    <MessageItem record={item.record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />
+                  ) : item.kind === "pending-user" ? (
+                    <UserBubble text={item.text} avatarUrl={userAvatarUrl} />
+                  ) : (
+                    <StreamingItem text={item.text} />
+                  )}
+                </MeasuredItem>
+              );
+            })}
+          </Box>
+        ) : (
+          <Box style={{ display: "flex", flexDirection: "column" }}>
+            {items.map((item) => (
+              <Box key={item.key}>
                 {item.kind === "message" ? (
                   <MessageItem record={item.record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />
                 ) : item.kind === "pending-user" ? (
@@ -225,10 +242,10 @@ export default function MessageList({ messages, streamText, showGenerating, pend
                 ) : (
                   <StreamingItem text={item.text} />
                 )}
-              </MeasuredItem>
-            );
-          })}
-        </Box>
+              </Box>
+            ))}
+          </Box>
+        )}
       </Box>
     </ScrollArea>
 
@@ -276,25 +293,32 @@ function findVisibleEndIndex(
 }
 
 function MeasuredItem({
+  itemIndex,
   top,
-  onHeightChange,
+  setItemHeights,
   children,
 }: {
+  itemIndex: number;
   top: number;
-  onHeightChange: (height: number) => void;
+  setItemHeights: React.Dispatch<React.SetStateAction<Record<number, number>>>;
   children: React.ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const lastHeightRef = useRef<number | null>(null);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const measure = () => onHeightChange(el.getBoundingClientRect().height);
+    const measure = () => {
+      const height = el.getBoundingClientRect().height;
+      setItemHeights((current) => (current[itemIndex] === height ? current : { ...current, [itemIndex]: height }));
+      if (lastHeightRef.current !== height) lastHeightRef.current = height;
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [onHeightChange]);
+  }, [itemIndex, setItemHeights, top]);
 
   return (
     <Box ref={ref} style={{ position: "absolute", top, left: 0, right: 0 }}>

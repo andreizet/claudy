@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, Text, UnstyledButton } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -51,13 +51,19 @@ export default function App() {
     );
   };
 
-  const updateTabSessionTitle = (tabId: string, sessionTitle: string | null) => {
-    setTabs((prev) => prev.map((tab) => (
-      tab.id === tabId && tab.kind === "chat"
-        ? { ...tab, sessionTitle }
-        : tab
-    )));
-  };
+  const updateTabSessionTitle = useCallback((tabId: string, sessionTitle: string | null) => {
+    setTabs((prev) => {
+      let changed = false;
+      const next = prev.map((tab) => {
+        if (tab.id !== tabId || tab.kind !== "chat" || tab.sessionTitle === sessionTitle) {
+          return tab;
+        }
+        changed = true;
+        return { ...tab, sessionTitle };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
 
   const handleCreateSession = async (workspacePath: string, replaceActive = false) => {
     const workspace = await invoke<DiscoveredWorkspace>("describe_workspace", { workspacePath });
@@ -122,21 +128,6 @@ export default function App() {
   }, [tabs, favicons]);
 
   const hasProjectTabs = tabs.some((t) => t.kind === "chat");
-
-  if (!hasProjectTabs) {
-    return (
-      <Box style={{ height: "100vh", minHeight: 0 }}>
-        <HomeView
-          workspaces={workspaces}
-          isLoading={isLoading}
-          accountInfo={accountInfo}
-          onOpenWorkspace={openWorkspaceInNewTab}
-          onCreateSession={(workspacePath) => void handleCreateSession(workspacePath)}
-        />
-      </Box>
-    );
-  }
-
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
 
   const closeTab = (id: string) => {
@@ -158,6 +149,25 @@ export default function App() {
       return next;
     });
   };
+
+  const handleSessionTitleChange = useCallback((sessionTitle: string | null) => {
+    const currentActiveTabId = activeTabId;
+    updateTabSessionTitle(currentActiveTabId, sessionTitle);
+  }, [activeTabId, updateTabSessionTitle]);
+
+  if (!hasProjectTabs) {
+    return (
+      <Box style={{ height: "100vh", minHeight: 0 }}>
+        <HomeView
+          workspaces={workspaces}
+          isLoading={isLoading}
+          accountInfo={accountInfo}
+          onOpenWorkspace={openWorkspaceInNewTab}
+          onCreateSession={(workspacePath) => void handleCreateSession(workspacePath)}
+        />
+      </Box>
+    );
+  }
 
   const tabHeader = (
     <Box
@@ -269,7 +279,7 @@ export default function App() {
           workspace={activeTab.workspace}
           accountInfo={accountInfo}
           mainHeader={tabHeader}
-          onSessionTitleChange={(sessionTitle) => updateTabSessionTitle(activeTab.id, sessionTitle)}
+          onSessionTitleChange={handleSessionTitleChange}
           onBack={() =>
             setTabs((prev) =>
               prev.map((t) =>
