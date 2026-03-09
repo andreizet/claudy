@@ -6,7 +6,10 @@
 html,
 body,
 #root {
+  margin: 0;
+  min-height: 100%;
   font-family: var(--mantine-font-family);
+  background: rgb(12, 12, 15);
 }
 
 * {
@@ -41,4 +44,114 @@ body,
 [data-mantine-scrollbar] > div {
   background-color: #FFE100 !important;
   opacity: 1 !important;
+}
+
+.splash-screen {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at center, rgba(255, 225, 0, 0.14), rgba(255, 225, 0, 0) 28%),
+    rgb(12, 12, 15);
+}
+
+.splash-screen__logo-wrap {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 168px;
+  height: 168px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(255, 225, 0, 0.16), rgba(255, 225, 0, 0) 68%);
+  animation: splash-logo-wrap 1.8s cubic-bezier(0.2, 1, 0.22, 1) both;
+}
+
+.splash-screen__logo {
+  display: block;
+  width: 84px;
+  height: auto;
+  filter: drop-shadow(0 0 24px rgba(255, 225, 0, 0.18));
+  animation:
+    splash-logo-enter 0.9s cubic-bezier(0.16, 1, 0.3, 1) both,
+    splash-logo-float 2.6s ease-in-out 0.9s infinite;
+}
+
+.splash-screen__halo {
+  position: absolute;
+  inset: 50%;
+  border: 1px solid rgba(255, 225, 0, 0.18);
+  border-radius: 999px;
+  transform: translate(-50%, -50%) scale(0.75);
+  opacity: 0;
+}
+
+.splash-screen__halo--outer {
+  width: min(58vw, 560px);
+  aspect-ratio: 1;
+  animation: splash-halo 2.2s ease-out infinite;
+}
+
+.splash-screen__halo--inner {
+  width: min(42vw, 380px);
+  aspect-ratio: 1;
+  animation: splash-halo 2.2s ease-out 0.35s infinite;
+}
+
+@keyframes splash-logo-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.82);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes splash-logo-float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes splash-logo-wrap {
+  0% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes splash-halo {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.72);
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-screen__logo-wrap,
+  .splash-screen__logo,
+  .splash-screen__halo {
+    animation: none;
+  }
 }

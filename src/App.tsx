@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "./types";
 import HomeView from "./views/HomeView";
 import ChatView from "./views/ChatView";
+import SplashScreen from "./components/SplashScreen";
 
 type AppTab =
   | { id: string; kind: "home" }
@@ -23,6 +24,7 @@ export default function App() {
   const initialTabId = useMemo(createTabId, []);
   const [tabs, setTabs] = useState<AppTab[]>([{ id: initialTabId, kind: "home" }]);
   const [activeTabId, setActiveTabId] = useState(initialTabId);
+  const [showSplash, setShowSplash] = useState(() => !import.meta.env.TEST);
 
   const { data: workspaces = [], isLoading } = useQuery({
     queryKey: ["existing-sessions"],
@@ -154,6 +156,21 @@ export default function App() {
     const currentActiveTabId = activeTabId;
     updateTabSessionTitle(currentActiveTabId, sessionTitle);
   }, [activeTabId, updateTabSessionTitle]);
+
+  useEffect(() => {
+    if (!showSplash) return;
+    const timer = window.setTimeout(() => {
+      setShowSplash(false);
+    }, 1800);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [showSplash]);
+
+  if (showSplash) {
+    return <SplashScreen />;
+  }
 
   if (!hasProjectTabs) {
     return (
