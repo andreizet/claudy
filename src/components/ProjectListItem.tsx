@@ -97,7 +97,6 @@ export default function ProjectListItem({ workspace, faviconDataUrl, isFavorite,
           color: "rgba(255,255,255,0.85)",
           flexShrink: 0,
           letterSpacing: 0.5,
-          fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
         }}
       >
         {faviconDataUrl ? (

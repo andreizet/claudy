@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use base64::Engine;
+use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 // ─── Data types ───────────────────────────────────────────────────────────────
@@ -440,6 +441,7 @@ fn claude_binary_and_path() -> (String, String) {
     #[cfg(windows)]
     {
         path_entries.push(home.join("AppData").join("Roaming").join("npm").to_string_lossy().to_string());
+        path_entries.push(home.join(".local").join("bin").to_string_lossy().to_string());
         path_entries.push(home.join(".cargo").join("bin").to_string_lossy().to_string());
     }
 
@@ -460,7 +462,11 @@ fn claude_binary_and_path() -> (String, String) {
 
     #[cfg(windows)]
     let candidates = [
+        home.join(".local").join("bin").join("claude.exe").to_string_lossy().to_string(),
+        home.join(".local").join("bin").join("claude.cmd").to_string_lossy().to_string(),
+        home.join(".local").join("bin").join("claude").to_string_lossy().to_string(),
         home.join("AppData").join("Roaming").join("npm").join("claude.cmd").to_string_lossy().to_string(),
+        home.join("AppData").join("Roaming").join("npm").join("claude.exe").to_string_lossy().to_string(),
         home.join("AppData").join("Roaming").join("npm").join("claude").to_string_lossy().to_string(),
         "claude.cmd".to_string(),
         "claude.exe".to_string(),
@@ -511,6 +517,27 @@ fn iso_date_prefix(value: &str) -> Option<String> {
     value.get(0..10).map(|date| date.to_string())
 }
 
+fn extract_message_text(content: &serde_json::Value) -> String {
+    if let Some(text) = content.as_str() {
+        return text.trim().to_string();
+    }
+
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|block| block.get("type").and_then(|value| value.as_str()) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
+        .collect::<Vec<_>>()
+        .join("")
+        .trim()
+        .to_string()
+}
+
+fn parse_rfc3339_timestamp(value: &str) -> Option<OffsetDateTime> {
+    OffsetDateTime::parse(value, &Rfc3339).ok()
+}
+
 fn load_session_meta_files_from(root: &Path) -> Vec<SessionMetaFile> {
     if !root.exists() {
         return vec![];
@@ -532,11 +559,132 @@ fn load_session_meta_files_from(root: &Path) -> Vec<SessionMetaFile> {
     items
 }
 
+fn synthesize_session_meta_files_from(root: &Path) -> Vec<SessionMetaFile> {
+    if !root.exists() {
+        return vec![];
+    }
+
+    let mut items = Vec::new();
+    for entry in walkdir::WalkDir::new(root).into_iter().flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if path_contains_component(path, "subagents") {
+            continue;
+        }
+
+        let Some(session_id) = path.file_stem().and_then(|value| value.to_str()).map(|value| value.to_string()) else {
+            continue;
+        };
+
+        let Ok(file) = fs::File::open(path) else {
+            continue;
+        };
+
+        let mut meta = SessionMetaFile {
+            session_id,
+            ..SessionMetaFile::default()
+        };
+        let mut first_seen = Option::<OffsetDateTime>::None;
+        let mut last_seen = Option::<OffsetDateTime>::None;
+
+        for line in BufReader::new(file).lines().flatten() {
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+
+            if meta.project_path.is_empty() {
+                if let Some(cwd) = record.get("cwd").and_then(|value| value.as_str()) {
+                    meta.project_path = cwd.to_string();
+                }
+            }
+
+            if let Some(timestamp) = record.get("timestamp").and_then(|value| value.as_str()) {
+                if meta.start_time.is_empty() {
+                    meta.start_time = timestamp.to_string();
+                }
+                if let Some(parsed) = parse_rfc3339_timestamp(timestamp) {
+                    first_seen = Some(first_seen.map_or(parsed, |current| current.min(parsed)));
+                    last_seen = Some(last_seen.map_or(parsed, |current| current.max(parsed)));
+                }
+            }
+
+            match record.get("type").and_then(|value| value.as_str()) {
+                Some("user") => {
+                    meta.user_message_count += 1;
+                    if meta.first_prompt.is_empty() {
+                        let text = extract_message_text(&record["message"]["content"]);
+                        if !text.is_empty() {
+                            meta.first_prompt = text;
+                        }
+                    }
+                }
+                Some("assistant") => {
+                    meta.assistant_message_count += 1;
+                    if let Some(blocks) = record
+                        .get("message")
+                        .and_then(|message| message.get("content"))
+                        .and_then(|value| value.as_array())
+                    {
+                        for block in blocks {
+                            if block.get("type").and_then(|value| value.as_str()) != Some("tool_use") {
+                                continue;
+                            }
+                            let Some(name) = block.get("name").and_then(|value| value.as_str()) else {
+                                continue;
+                            };
+                            *meta.tool_counts.entry(name.to_string()).or_insert(0) += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if meta.project_path.is_empty() {
+            if let Some(encoded_dir_name) = path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+            {
+                meta.project_path = decode_project_path(encoded_dir_name).0.to_string_lossy().to_string();
+            }
+        }
+
+        if meta.start_time.is_empty() || meta.project_path.is_empty() {
+            continue;
+        }
+
+        if let (Some(first_seen), Some(last_seen)) = (first_seen, last_seen) {
+            let duration = (last_seen - first_seen).whole_minutes();
+            meta.duration_minutes = duration.max(0) as u64;
+        }
+
+        items.push(meta);
+    }
+
+    items
+}
+
 fn load_session_meta_files() -> Vec<SessionMetaFile> {
     let Some(home) = dirs_next::home_dir() else {
         return vec![];
     };
-    load_session_meta_files_from(&home.join(".claude").join("usage-data").join("session-meta"))
+    let session_meta_root = home.join(".claude").join("usage-data").join("session-meta");
+    let items = load_session_meta_files_from(&session_meta_root);
+    if !items.is_empty() {
+        return items;
+    }
+
+    synthesize_session_meta_files_from(&home.join(".claude").join("projects"))
 }
 
 fn load_session_json_metrics_from(root: &Path) -> HashMap<String, SessionJsonMetrics> {
@@ -1016,12 +1164,6 @@ fn scan_existing_sessions_in(claude_projects_dir: &Path, home: &Path) -> Vec<Dis
             }
             let dir_name = path.file_name()?.to_str()?.to_string();
             let (real_path, path_exists) = decode_project_path_with_home(&dir_name, home);
-            eprintln!(
-                "[scan_existing_sessions] encoded={} decoded={} exists={}",
-                dir_name,
-                real_path.to_string_lossy(),
-                path_exists
-            );
             Some(collect_workspace_from_project_dir(&path, dir_name, real_path, path_exists))
         })
         .collect();
@@ -1864,6 +2006,42 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(drive_root);
+    }
+
+    #[test]
+    fn synthesize_session_meta_files_from_jsonl_when_usage_data_is_missing() {
+        let root = temp_test_dir();
+        let project = root.join("_work").join("claudy");
+        fs::create_dir_all(&project).unwrap();
+
+        let projects_dir = root.join(".claude").join("projects");
+        let encoded = claude_encode(&project.to_string_lossy());
+        let session_dir = projects_dir.join(encoded);
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("session-a.jsonl"),
+            concat!(
+                "{\"type\":\"user\",\"cwd\":\"",
+                "C:\\\\work\\\\claudy",
+                "\",\"sessionId\":\"session-a\",\"message\":{\"role\":\"user\",\"content\":\"Build the dashboard\"},\"timestamp\":\"2026-03-08T10:00:00Z\"}\n",
+                "{\"type\":\"assistant\",\"cwd\":\"",
+                "C:\\\\work\\\\claudy",
+                "\",\"sessionId\":\"session-a\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\"}],\"usage\":{\"input_tokens\":12,\"output_tokens\":8}},\"timestamp\":\"2026-03-08T10:05:00Z\"}\n"
+            ),
+        )
+        .unwrap();
+
+        let items = synthesize_session_meta_files_from(&projects_dir);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].session_id, "session-a");
+        assert_eq!(items[0].project_path, r"C:\work\claudy");
+        assert_eq!(items[0].user_message_count, 1);
+        assert_eq!(items[0].assistant_message_count, 1);
+        assert_eq!(items[0].first_prompt, "Build the dashboard");
+        assert_eq!(items[0].tool_counts.get("Read"), Some(&1));
+        assert_eq!(items[0].duration_minutes, 5);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

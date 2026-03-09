@@ -31,10 +31,9 @@ const accent: MantineColorsTuple = [
 export const theme = createTheme({
   primaryColor: "accent",
   colors: { dark, accent },
-  fontFamily:
-    '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif',
+  fontFamily: '"Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif',
   fontFamilyMonospace:
-    '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
+    '"JetBrains Mono", "Cascadia Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace',
   defaultRadius: "md",
   cursorType: "pointer",
 });
