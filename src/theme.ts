@@ -34,6 +34,13 @@ export const theme = createTheme({
   fontFamily: '"Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif',
   fontFamilyMonospace:
     '"JetBrains Mono", "Cascadia Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace',
+  fontSizes: {
+    xs: "13px",
+    sm: "15px",
+    md: "16px",
+    lg: "18px",
+    xl: "22px",
+  },
   defaultRadius: "md",
   cursorType: "pointer",
 });

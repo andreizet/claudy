@@ -30,12 +30,19 @@ describe("SessionItem", () => {
     renderWithMantine(
       <SessionItem
         session={mockSessions[0]}
+        title="Implement the login flow"
         active={true}
         pinned={false}
         confirmingDelete={false}
+        renaming={false}
+        renameValue=""
         loading={false}
         onClick={() => {}}
         onPin={() => {}}
+        onRename={() => {}}
+        onRenameChange={() => {}}
+        onRenameCommit={() => {}}
+        onRenameCancel={() => {}}
         onDelete={() => {}}
         onConfirmDelete={() => {}}
         onCancelDelete={() => {}}
@@ -53,12 +60,19 @@ describe("SessionItem", () => {
     const { container } = renderWithMantine(
       <SessionItem
         session={mockSessions[0]}
+        title="Implement the login flow"
         active={false}
         pinned={false}
         confirmingDelete={false}
+        renaming={false}
+        renameValue=""
         loading={false}
         onClick={() => {}}
         onPin={onPin}
+        onRename={() => {}}
+        onRenameChange={() => {}}
+        onRenameCommit={() => {}}
+        onRenameCancel={() => {}}
         onDelete={onDelete}
         onConfirmDelete={() => {}}
         onCancelDelete={() => {}}
@@ -80,12 +94,19 @@ describe("SessionItem", () => {
     renderWithMantine(
       <SessionItem
         session={mockSessions[1]}
+        title="Fix the dashboard charts"
         active={false}
         pinned={false}
         confirmingDelete={true}
+        renaming={false}
+        renameValue=""
         loading={false}
         onClick={() => {}}
         onPin={() => {}}
+        onRename={() => {}}
+        onRenameChange={() => {}}
+        onRenameCommit={() => {}}
+        onRenameCancel={() => {}}
         onDelete={() => {}}
         onConfirmDelete={onConfirmDelete}
         onCancelDelete={onCancelDelete}

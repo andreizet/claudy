@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { Box, Text, ScrollArea, UnstyledButton, Group, Skeleton } from "@mantine/core";
+import { Box, Text, ScrollArea, UnstyledButton, Group, Skeleton, Tooltip } from "@mantine/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -14,9 +14,12 @@ interface Props {
   accountInfo: ClaudeAccountInfo | null;
   onBack: () => void;
   mainHeader?: React.ReactNode;
+  onSessionTitleChange?: (title: string | null) => void;
 }
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 const PINNED_SESSION_STORAGE_KEY = "claudy.pinnedSessions";
+const TOOL_POLICY_STORAGE_KEY = "claudy.toolPolicies";
+const SESSION_NAME_STORAGE_KEY = "claudy.sessionNames";
 const BUILTIN_SLASH_COMMANDS: SlashCommandOption[] = [
   { name: "add-dir", description: "Add additional working directories.", source: "builtin" },
   { name: "agents", description: "Manage custom AI subagents.", source: "builtin" },
@@ -51,6 +54,35 @@ interface SlashCommandOption {
 interface InteractiveEventPayload {
   session_id: string;
   data: string;
+}
+
+interface PendingSendContext {
+  message: string;
+  sessionId: string | null;
+  allowedTools?: string[];
+}
+
+interface SessionToolState {
+  sessionId: string | null;
+  model: string | null;
+  cwd: string | null;
+  availableTools: string[];
+  selectedTools: string[];
+  mcpServers: string[];
+}
+
+interface ClaudeSessionInit {
+  session_id: string | null;
+  cwd: string | null;
+  model: string | null;
+  tools: string[];
+  mcp_servers: unknown;
+}
+
+interface PersistedToolPolicy {
+  selectedTools: string[];
+  availableTools?: string[];
+  mcpServers?: string[];
 }
 
 function shortenPath(fullPath: string): string {
@@ -96,7 +128,89 @@ function findActiveTrigger(value: string, caret: number) {
   };
 }
 
-export default function ChatView({ workspace, accountInfo, onBack, mainHeader }: Props) {
+function normalizeKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function prettifyMcpServerName(rawServer: string, mcpServers: string[]): string {
+  const normalizedRaw = normalizeKey(rawServer);
+  const matched = mcpServers.find((server) => normalizeKey(server) === normalizedRaw);
+  if (matched) return matched;
+  return rawServer.replace(/_/g, " ");
+}
+
+function extractMcpServers(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((server) => {
+      if (typeof server === "string") return [server];
+      if (!server || typeof server !== "object") return [];
+      const candidate = server as Record<string, unknown>;
+      const directName = [candidate.name, candidate.display_name, candidate.server_name, candidate.id]
+        .find((item): item is string => typeof item === "string" && item.trim().length > 0);
+      if (directName) return [directName];
+      return [];
+    });
+  }
+
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>).flatMap(([key, server]) => {
+      if (typeof server === "string") return [server];
+      if (server && typeof server === "object") {
+        const candidate = server as Record<string, unknown>;
+        const directName = [candidate.name, candidate.display_name, candidate.server_name, candidate.id]
+          .find((item): item is string => typeof item === "string" && item.trim().length > 0);
+        if (directName) return [directName];
+      }
+      return [key];
+    });
+  }
+
+  return [];
+}
+
+function splitToolsBySource(availableTools: string[], mcpServers: string[]) {
+  const builtinTools: string[] = [];
+  const mcpGroups = new Map<string, { label: string; rawServer: string; tools: Array<{ raw: string; label: string }> }>();
+
+  for (const tool of availableTools) {
+    const match = tool.match(/^mcp__([^_].*?)__(.+)$/);
+    if (!match) {
+      builtinTools.push(tool);
+      continue;
+    }
+
+    const rawServer = match[1];
+    const rawTool = match[2];
+    const group = mcpGroups.get(rawServer) ?? {
+      label: prettifyMcpServerName(rawServer, mcpServers),
+      rawServer,
+      tools: [],
+    };
+    group.tools.push({ raw: tool, label: rawTool });
+    mcpGroups.set(rawServer, group);
+  }
+
+  for (const server of mcpServers) {
+    const existingGroup = Array.from(mcpGroups.values()).find((group) => (
+      normalizeKey(group.rawServer) === normalizeKey(server)
+      || normalizeKey(group.label) === normalizeKey(server)
+    ));
+    if (existingGroup) continue;
+    const rawServer = server.replace(/\s+/g, "_");
+    mcpGroups.set(rawServer, {
+      label: server,
+      rawServer,
+      tools: [],
+    });
+  }
+
+  return {
+    builtinTools,
+    mcpGroups: Array.from(mcpGroups.values()).sort((a, b) => a.label.localeCompare(b.label)),
+  };
+}
+
+export default function ChatView({ workspace, accountInfo, onBack, mainHeader, onSessionTitleChange }: Props) {
   const queryClient = useQueryClient();
   const [sessionItems, setSessionItems] = useState<DiscoveredSession[]>(workspace.sessions);
   const [activeSession, setActiveSession] = useState<DiscoveredSession | null>(workspace.sessions[0] ?? null);
@@ -125,11 +239,111 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
   const [interactiveStarting, setInteractiveStarting] = useState(false);
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null);
   const [creatingInitialSession, setCreatingInitialSession] = useState(false);
+  const [sessionToolState, setSessionToolState] = useState<SessionToolState | null>(null);
+  const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
+  const [sessionSettingsSnapshot, setSessionSettingsSnapshot] = useState<SessionToolState | null>(null);
+  const [mcpGroupsExpanded, setMcpGroupsExpanded] = useState(false);
+  const [initializingNewSession, setInitializingNewSession] = useState(false);
+  const [loadingSessionSettings, setLoadingSessionSettings] = useState(false);
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const interactiveWrittenLengthRef = useRef(0);
+  const pendingSendRef = useRef<PendingSendContext | null>(null);
+
+  const persistToolPolicy = (policy: PersistedToolPolicy) => {
+    try {
+      const raw = window.localStorage.getItem(TOOL_POLICY_STORAGE_KEY);
+      const parsed = raw ? (JSON.parse(raw) as Record<string, PersistedToolPolicy>) : {};
+      parsed[workspace.encoded_name] = policy;
+      window.localStorage.setItem(TOOL_POLICY_STORAGE_KEY, JSON.stringify(parsed));
+    } catch {
+      // Ignore storage errors.
+    }
+  };
+
+  const loadSessionNames = () => {
+    try {
+      const raw = window.localStorage.getItem(SESSION_NAME_STORAGE_KEY);
+      if (!raw) return {} as Record<string, string>;
+      const parsed = JSON.parse(raw) as Record<string, Record<string, string>>;
+      return parsed[workspace.encoded_name] ?? {};
+    } catch {
+      return {} as Record<string, string>;
+    }
+  };
+
+  const persistSessionName = (sessionId: string, name: string | null) => {
+    try {
+      const raw = window.localStorage.getItem(SESSION_NAME_STORAGE_KEY);
+      const parsed = raw ? (JSON.parse(raw) as Record<string, Record<string, string>>) : {};
+      const nextWorkspaceNames = { ...(parsed[workspace.encoded_name] ?? {}) };
+      if (name && name.trim()) nextWorkspaceNames[sessionId] = name.trim();
+      else delete nextWorkspaceNames[sessionId];
+      parsed[workspace.encoded_name] = nextWorkspaceNames;
+      window.localStorage.setItem(SESSION_NAME_STORAGE_KEY, JSON.stringify(parsed));
+    } catch {
+      // Ignore storage errors.
+    }
+  };
+
+  const getSessionDisplayTitle = (session: DiscoveredSession | null) => {
+    if (!session) return "No sessions";
+    const customNames = loadSessionNames();
+    return customNames[session.id]?.trim() || session.first_message || "Empty session";
+  };
+
+  const loadPersistedToolPolicy = () => {
+    try {
+      const raw = window.localStorage.getItem(TOOL_POLICY_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Record<string, PersistedToolPolicy>;
+      const value = parsed[workspace.encoded_name];
+      if (!value || !Array.isArray(value.selectedTools)) return null;
+      return value;
+    } catch {
+      return null;
+    }
+  };
+
+  const applySessionInit = (init: ClaudeSessionInit) => {
+    const tools = Array.isArray(init.tools) ? init.tools : [];
+    const mcpServers = extractMcpServers(init.mcp_servers);
+    const persistedPolicy = loadPersistedToolPolicy();
+    const selectedTools = persistedPolicy
+      ? tools.filter((tool) => persistedPolicy.selectedTools.includes(tool))
+      : tools;
+    persistToolPolicy({
+      selectedTools,
+      availableTools: tools,
+      mcpServers,
+    });
+    setSessionToolState({
+      sessionId: init.session_id,
+      model: init.model,
+      cwd: init.cwd ?? workspace.decoded_path,
+      availableTools: tools,
+      selectedTools,
+      mcpServers,
+    });
+  };
+
+  const fetchSessionSettings = async () => {
+    setLoadingSessionSettings(true);
+    try {
+      const init = await invoke<ClaudeSessionInit>("get_claude_session_init", {
+        workspacePath: workspace.decoded_path,
+      });
+      applySessionInit(init);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setLoadingSessionSettings(false);
+    }
+  };
 
   const persistPinnedSession = (sessionId: string | null) => {
     setPinnedSessionId(sessionId);
@@ -155,6 +369,10 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
     setInput("");
     setStreamText("");
     setStreaming(false);
+    setSessionToolState(null);
+    setSessionSettingsOpen(false);
+    setMcpGroupsExpanded(false);
+    setInitializingNewSession(true);
   };
 
   const handleDeleteSession = async (session: DiscoveredSession) => {
@@ -217,7 +435,96 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
     setPinnedSessionId(pinnedId);
     const pinnedSession = pinnedId ? sessions.find((session) => session.id === pinnedId) ?? null : null;
     setActiveSession(pinnedSession ?? sessions[0] ?? null);
+    const persistedPolicy = loadPersistedToolPolicy();
+    setSessionToolState(
+      persistedPolicy
+        ? {
+            sessionId: pinnedSession?.id ?? sessions[0]?.id ?? null,
+            model: null,
+            cwd: workspace.decoded_path,
+            availableTools: persistedPolicy.availableTools ?? persistedPolicy.selectedTools,
+            selectedTools: persistedPolicy.selectedTools,
+            mcpServers: persistedPolicy.mcpServers ?? [],
+          }
+        : null
+    );
+    setSessionSettingsOpen(false);
+    setMcpGroupsExpanded(false);
+    setInitializingNewSession(sessions.length === 0);
+    setLoadingSessionSettings(false);
   }, [workspace.encoded_name, workspace.sessions]);
+
+  const activeSessionDisplayTitle = activeSession ? getSessionDisplayTitle(activeSession) : null;
+
+  useEffect(() => {
+    onSessionTitleChange?.(activeSessionDisplayTitle);
+  }, [activeSessionDisplayTitle, onSessionTitleChange]);
+
+  useEffect(() => {
+    if (activeSession || !initializingNewSession) return;
+    let cancelled = false;
+
+    setLoadingSessionSettings(true);
+    invoke<ClaudeSessionInit>("get_claude_session_init", {
+      workspacePath: workspace.decoded_path,
+    })
+      .then((init) => {
+        if (cancelled) return;
+        applySessionInit(init);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error(error);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingSessionSettings(false);
+          setInitializingNewSession(false);
+          setSessionSettingsOpen(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSession, initializingNewSession, workspace.decoded_path]);
+
+  useEffect(() => {
+    if (!activeSession || sessionToolState || loadingSessionSettings || initializingNewSession) return;
+    void fetchSessionSettings();
+  }, [activeSession, initializingNewSession, loadingSessionSettings, sessionToolState]);
+
+  const openSessionSettings = () => {
+    setSessionSettingsSnapshot(sessionToolState ? { ...sessionToolState, selectedTools: [...sessionToolState.selectedTools], availableTools: [...sessionToolState.availableTools], mcpServers: [...sessionToolState.mcpServers] } : null);
+    setSessionSettingsOpen(true);
+    if (!sessionToolState && !loadingSessionSettings) {
+      void fetchSessionSettings();
+    }
+  };
+
+  const closeSessionSettings = () => {
+    setSessionSettingsOpen(false);
+    setSessionSettingsSnapshot(null);
+  };
+
+  const cancelSessionSettings = () => {
+    if (sessionSettingsSnapshot) {
+      setSessionToolState(sessionSettingsSnapshot);
+    }
+    closeSessionSettings();
+  };
+
+  const saveSessionSettings = () => {
+    if (sessionToolState) {
+      persistToolPolicy({
+        selectedTools: sessionToolState.selectedTools,
+        availableTools: sessionToolState.availableTools,
+        mcpServers: sessionToolState.mcpServers,
+      });
+    }
+    closeSessionSettings();
+  };
 
   const syncInteractiveTerminalSize = (sessionId: string) => {
     const terminal = terminalRef.current;
@@ -255,6 +562,48 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
   }, [autocompleteQuery, slashCommands]);
 
   const activeSuggestions = autocompleteMode === "command" ? commandSuggestions : fileSuggestions;
+
+  const sendClaudeMessage = (message: string, allowedTools?: string[]) => {
+    const persistedPolicy = loadPersistedToolPolicy();
+    const effectiveAllowedTools = allowedTools
+      ?? sessionToolState?.selectedTools
+      ?? persistedPolicy?.selectedTools;
+    setStreaming(true);
+    setStreamText("");
+    setPendingUserMessage(message);
+    pendingSendRef.current = {
+      message,
+      sessionId: activeSession?.id ?? null,
+      allowedTools: effectiveAllowedTools,
+    };
+    const command = activeSession
+      ? invoke("send_message", {
+          sessionId: activeSession.id,
+          cwd: workspace.decoded_path,
+          message,
+          model,
+          effort,
+          allowedTools: effectiveAllowedTools,
+        })
+      : (() => {
+          setCreatingInitialSession(true);
+          return invoke("send_new_message", {
+            cwd: workspace.decoded_path,
+            message,
+            model,
+            effort,
+            allowedTools: effectiveAllowedTools,
+          });
+        })();
+    command.catch((e) => {
+      console.error(e);
+      setStreaming(false);
+      setStreamText("");
+      setPendingUserMessage("");
+      setCreatingInitialSession(false);
+      pendingSendRef.current = null;
+    });
+  };
 
   const loadMessages = (filePath: string) => {
     invoke<unknown[]>("get_session_messages", { filePath })
@@ -368,6 +717,43 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
             ? content.filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("")
             : typeof content === "string" ? content : "";
           if (text) setStreamText(text);
+          return;
+        }
+        if (rec.type === "system" && rec.subtype === "init") {
+          const availableTools = Array.isArray(rec.tools)
+            ? rec.tools.filter((tool: unknown): tool is string => typeof tool === "string")
+            : [];
+          const mcpServers = extractMcpServers(rec.mcp_servers);
+          const persistedPolicy = loadPersistedToolPolicy();
+          const selectedTools = persistedPolicy
+            ? availableTools.filter((tool) => persistedPolicy.selectedTools.includes(tool))
+            : availableTools;
+          persistToolPolicy({
+            selectedTools,
+            availableTools,
+            mcpServers,
+          });
+          const nextState = {
+            sessionId: typeof rec.session_id === "string" ? rec.session_id : activeSession?.id ?? null,
+            model: typeof rec.model === "string" ? rec.model : null,
+            cwd: typeof rec.cwd === "string" ? rec.cwd : null,
+            availableTools,
+            selectedTools,
+            mcpServers,
+          };
+          setSessionToolState((current) => {
+            if (
+              current
+              && current.sessionId === nextState.sessionId
+              && current.availableTools.join("|") === nextState.availableTools.join("|")
+              && current.selectedTools.join("|") === nextState.selectedTools.join("|")
+              && current.mcpServers.join("|") === nextState.mcpServers.join("|")
+            ) {
+              return current;
+            }
+            return nextState;
+          });
+          return;
         }
       } catch {}
     });
@@ -375,6 +761,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
       setStreaming(false);
       setStreamText("");
       setPendingUserMessage("");
+      pendingSendRef.current = null;
       if (creatingInitialSession || !activeSession) {
         try {
           const refreshed = await invoke<DiscoveredWorkspace>("describe_workspace", {
@@ -405,7 +792,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
       unlistenDone.then(f => f());
       unlistenError.then(f => f());
     };
-  }, [activeSession?.file_path, creatingInitialSession, queryClient, workspace.decoded_path]);
+  }, [activeSession, creatingInitialSession, queryClient, workspace.decoded_path]);
 
   useEffect(() => {
     const unlistenOutput = listen<InteractiveEventPayload>("claudy://interactive-output", (event) => {
@@ -635,7 +1022,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
 
   const handleSend = () => {
     const text = input.trim();
-    if ((!text && selectedFileRefs.length === 0) || streaming) return;
+    if ((!text && selectedFileRefs.length === 0) || streaming || (!activeSession && (!sessionToolState || initializingNewSession))) return;
     if (text.startsWith("/") && selectedFileRefs.length === 0) {
       setInput("");
       setAutocompleteMode(null);
@@ -656,38 +1043,32 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
     setAutocompleteOpen(false);
     setAutocompleteIndex(0);
     setAutocompleteRange(null);
-    setStreaming(true);
-    setStreamText("");
-    setPendingUserMessage(message);
-    const command = activeSession
-      ? invoke("send_message", {
-          sessionId: activeSession.id,
-          cwd: workspace.decoded_path,
-          message,
-          model,
-          effort,
-        })
-      : (() => {
-          setCreatingInitialSession(true);
-          return invoke("send_new_message", {
-            cwd: workspace.decoded_path,
-            message,
-            model,
-            effort,
-          });
-        })();
-    command.catch((e) => {
-      console.error(e);
-      setStreaming(false);
-      setStreamText("");
-      setPendingUserMessage("");
-      setCreatingInitialSession(false);
+    sendClaudeMessage(message);
+  };
+
+  const handleToggleTool = (tool: string) => {
+    setSessionToolState((current) => {
+      if (!current) return current;
+      const selectedTools = current.selectedTools.includes(tool)
+        ? current.selectedTools.filter((item) => item !== tool)
+        : [...current.selectedTools, tool].sort((a, b) => current.availableTools.indexOf(a) - current.availableTools.indexOf(b));
+      return { ...current, selectedTools };
     });
   };
 
-  const sessionTitle =
-    activeSession?.first_message ??
-    (activeSession ? "Session" : "No sessions");
+  const handleEnableAllTools = () => {
+    setSessionToolState((current) => {
+      if (!current) return current;
+      return { ...current, selectedTools: current.availableTools };
+    });
+  };
+
+  const handleDisableAllTools = () => {
+    setSessionToolState((current) => {
+      if (!current) return current;
+      return { ...current, selectedTools: [] };
+    });
+  };
   const email = accountInfo?.email?.trim().toLowerCase() ?? "";
   const userAvatarUrl = email
     ? `https://www.gravatar.com/avatar/${md5(email)}?s=80&d=identicon`
@@ -764,12 +1145,29 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
                 <SessionItem
                   key={s.id}
                   session={s}
+                  title={getSessionDisplayTitle(s)}
                   active={activeSession?.id === s.id}
                   pinned={pinnedSessionId === s.id}
                   confirmingDelete={pendingDeleteSessionId === s.id}
+                  renaming={renamingSessionId === s.id}
+                  renameValue={renamingSessionId === s.id ? renameValue : ""}
                   loading={loadingSessionId === s.id}
                   onClick={() => setActiveSession(s)}
                   onPin={() => handlePinSession(s)}
+                  onRename={() => {
+                    setRenamingSessionId(s.id);
+                    setRenameValue(getSessionDisplayTitle(s));
+                  }}
+                  onRenameChange={setRenameValue}
+                  onRenameCommit={() => {
+                    persistSessionName(s.id, renameValue);
+                    setRenamingSessionId(null);
+                    setRenameValue("");
+                  }}
+                  onRenameCancel={() => {
+                    setRenamingSessionId(null);
+                    setRenameValue("");
+                  }}
                   onDelete={() => requestDeleteSession(s)}
                   onConfirmDelete={() => void confirmDeleteSession()}
                   onCancelDelete={cancelDeleteSession}
@@ -808,15 +1206,6 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
       {/* ── Main panel ── */}
       <Box style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
         {mainHeader}
-        {/* Top bar */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", alignItems: "center", gap: 12, padding: "0 24px", height: 52, borderBottom: "1px solid #1f1f23", flexShrink: 0 }}>
-          <div style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", fontSize: 14, fontWeight: 500, color: "#e4e4e7", maxWidth: 500 }}>
-            {sessionTitle}
-          </div>
-          <div style={{ fontSize: 12, fontWeight: 500, color: "#71717a", whiteSpace: "nowrap" }}>
-            {workspace.display_name}
-          </div>
-        </div>
 
         {/* Messages */}
         {loadingMessages ? (
@@ -840,6 +1229,29 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
           <Box style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
             <ModelSelect value={model} onChange={setModel} />
             <EffortSelect value={effort} onChange={setEffort} />
+            <Box style={{ marginLeft: "auto" }}>
+              <Tooltip label="Session settings" position="top" withArrow>
+                <UnstyledButton
+                  onClick={openSessionSettings}
+                  title="Session settings"
+                  aria-label="Session settings"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 30,
+                    height: 30,
+                    borderRadius: 8,
+                    border: "1px solid #34343d",
+                    background: "#17181d",
+                    color: "#d4d4d8",
+                    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
+                  }}
+                >
+                  <SettingsIcon />
+                </UnstyledButton>
+              </Tooltip>
+            </Box>
           </Box>
           {/* Textarea row */}
           <Box style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 40px", alignItems: "center", gap: 8 }}>
@@ -893,6 +1305,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
                 <textarea
                   ref={textareaRef}
                   value={input}
+                  disabled={streaming || loadingMessages}
                   onChange={(e) => {
                     setInput(e.target.value);
                     syncAutocompleteState(e.target.value, e.target.selectionStart ?? e.target.value.length);
@@ -936,7 +1349,6 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
                   }}
                   placeholder="Ask for follow-up changes…"
                   rows={2}
-                  disabled={streaming || loadingMessages}
                   style={{
                     width: "100%",
                     background: "transparent",
@@ -1017,12 +1429,12 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
             <Box style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
               <UnstyledButton
                 onClick={handleSend}
-                disabled={streaming || loadingMessages || (!input.trim() && selectedFileRefs.length === 0)}
+                disabled={streaming || loadingMessages || sessionSettingsOpen || (!activeSession && initializingNewSession) || (!input.trim() && selectedFileRefs.length === 0)}
                 style={{
                   width: 36,
                   height: 36,
                   borderRadius: 8,
-                  background: streaming || loadingMessages || (!input.trim() && selectedFileRefs.length === 0) ? "#27272a" : "#f4f4f5",
+                  background: streaming || loadingMessages || sessionSettingsOpen || (!activeSession && initializingNewSession) || (!input.trim() && selectedFileRefs.length === 0) ? "#27272a" : "#f4f4f5",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
@@ -1123,6 +1535,20 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
             </Box>
           </Box>
         ) : null}
+        {sessionSettingsOpen ? (
+          <SessionSettingsOverlay
+            state={sessionToolState}
+            loading={loadingSessionSettings || (initializingNewSession && !sessionToolState)}
+            required={!activeSession}
+            mcpExpanded={mcpGroupsExpanded}
+            onToggleMcpExpanded={() => setMcpGroupsExpanded((current) => !current)}
+            onToggleTool={handleToggleTool}
+            onEnableAll={handleEnableAllTools}
+            onDisableAll={handleDisableAllTools}
+            onCancel={!activeSession ? undefined : cancelSessionSettings}
+            onSave={saveSessionSettings}
+          />
+        ) : null}
       </Box>
     </Box>
   );
@@ -1132,23 +1558,37 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader }:
 
 export function SessionItem({
   session,
+  title,
   active,
   pinned,
   confirmingDelete,
+  renaming,
+  renameValue,
   loading,
   onClick,
   onPin,
+  onRename,
+  onRenameChange,
+  onRenameCommit,
+  onRenameCancel,
   onDelete,
   onConfirmDelete,
   onCancelDelete,
 }: {
   session: DiscoveredSession;
+  title: string;
   active: boolean;
   pinned: boolean;
   confirmingDelete: boolean;
+  renaming: boolean;
+  renameValue: string;
   loading: boolean;
   onClick: () => void;
   onPin: () => void;
+  onRename: () => void;
+  onRenameChange: (value: string) => void;
+  onRenameCommit: () => void;
+  onRenameCancel: () => void;
   onDelete: () => void;
   onConfirmDelete: () => void;
   onCancelDelete: () => void;
@@ -1158,6 +1598,12 @@ export function SessionItem({
   return (
     <Box
       onClick={onClick}
+      onMouseDown={(event) => {
+        if (event.button !== 1 || renaming || confirmingDelete) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onDelete();
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -1198,19 +1644,61 @@ export function SessionItem({
           >
             <PinIcon />
           </ActionIconButton>
-          <Text
-            size="xs"
-            fw={active ? 500 : 400}
-            c={active ? "#e4e4e7" : hovered ? "#a1a1aa" : "#71717a"}
-            style={{ flex: 1, minWidth: 0, lineHeight: 1.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-          >
-            {session.first_message ?? "Empty session"}
-          </Text>
+          {renaming ? (
+            <input
+              aria-label="Session name"
+              autoFocus
+              value={renameValue}
+              onClick={(event) => event.stopPropagation()}
+              onChange={(event) => onRenameChange(event.target.value)}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  onRenameCommit();
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  onRenameCancel();
+                }
+              }}
+              onBlur={onRenameCommit}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                background: "#111115",
+                border: "1px solid #30303a",
+                borderRadius: 6,
+                color: "#e4e4e7",
+                fontSize: 12,
+                lineHeight: 1.5,
+                padding: "4px 8px",
+                outline: "none",
+              }}
+            />
+          ) : (
+            <Text
+              size="xs"
+              fw={active ? 500 : 400}
+              c={active ? "#f4f4f5" : hovered ? "#d4d4d8" : "#b4b4bd"}
+              style={{ flex: 1, minWidth: 0, lineHeight: 1.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            >
+              {title}
+            </Text>
+          )}
           <Text size="xs" c="#3f3f46" style={{ flexShrink: 0, fontSize: 11 }}>
             {loading ? "Loading..." : relativeTime(session.modified_at)}
           </Text>
           <ActionIconButton
-            visible={hovered}
+            visible={hovered && !renaming}
+            active={false}
+            title="Rename session"
+            onClick={onRename}
+          >
+            <EditIcon />
+          </ActionIconButton>
+          <ActionIconButton
+            visible={hovered && !renaming}
             active={false}
             title="Delete session"
             onClick={onDelete}
@@ -1257,6 +1745,278 @@ function ActionIconButton({
     >
       {children}
     </UnstyledButton>
+  );
+}
+
+function SessionSettingsOverlay({
+  state,
+  loading,
+  required,
+  mcpExpanded,
+  onToggleMcpExpanded,
+  onToggleTool,
+  onEnableAll,
+  onDisableAll,
+  onCancel,
+  onSave,
+}: {
+  state: SessionToolState | null;
+  loading: boolean;
+  required: boolean;
+  mcpExpanded: boolean;
+  onToggleMcpExpanded: () => void;
+  onToggleTool: (tool: string) => void;
+  onEnableAll: () => void;
+  onDisableAll: () => void;
+  onCancel?: () => void;
+  onSave: () => void;
+}) {
+  const { builtinTools, mcpGroups } = splitToolsBySource(state?.availableTools ?? [], state?.mcpServers ?? []);
+  return (
+    <Box
+      style={{
+        position: "absolute",
+        inset: 0,
+        background: "rgba(8, 8, 11, 0.84)",
+        backdropFilter: "blur(6px)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+        zIndex: 25,
+      }}
+    >
+      <Box
+        style={{
+          width: "min(900px, 100%)",
+          maxHeight: "100%",
+          overflowY: "auto",
+          background: "#111115",
+          border: "1px solid #2a2a32",
+          borderRadius: 16,
+          padding: 20,
+          boxShadow: "0 28px 80px rgba(0, 0, 0, 0.45)",
+        }}
+      >
+        <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <Box style={{ minWidth: 0 }}>
+            <Text size="lg" fw={600} c="#f4f4f5">Session settings</Text>
+            <Text size="xs" c="#71717a" mt={2}>
+              {loading || !state
+                ? "Loading Claude tool permissions"
+                : `${state.selectedTools.length}/${state.availableTools.length} tools allowed`}
+            </Text>
+          </Box>
+          <Box style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <UnstyledButton
+              onClick={onEnableAll}
+              disabled={!state}
+              style={{ fontSize: 11, color: state ? "#a1a1aa" : "#52525b", padding: "4px 6px" }}
+            >
+              Enable all
+            </UnstyledButton>
+            <UnstyledButton
+              onClick={onDisableAll}
+              disabled={!state}
+              style={{ fontSize: 11, color: state ? "#a1a1aa" : "#52525b", padding: "4px 6px" }}
+            >
+              Disable all
+            </UnstyledButton>
+          </Box>
+        </Box>
+        {loading || !state ? (
+          <Box style={{ padding: "28px 0 8px" }}>
+            <Text size="sm" c="#a1a1aa">
+              {loading
+                ? "Preparing Claude tool permissions before the session starts."
+                : "Session settings could not be loaded. You can close this and try again."}
+            </Text>
+          </Box>
+        ) : (
+          <>
+          <Box style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginTop: 12 }}>
+            <MetaField label="Session ID" value={state.sessionId ?? "Unknown"} mono />
+            <MetaField label="Model" value={state.model ?? "Unknown"} mono />
+            <MetaField label="Working Directory" value={state.cwd ?? "Unknown"} mono />
+          </Box>
+          <Text size="xs" fw={600} c="#a1a1aa" mt={14} mb={8}>
+            Built-in Tools ({builtinTools.length})
+          </Text>
+          <Box style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {builtinTools.map((tool) => {
+              const checked = state.selectedTools.includes(tool);
+              return (
+                <label
+                  key={tool}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "6px 10px",
+                    borderRadius: 999,
+                    border: `1px solid ${checked ? "#3f3f46" : "#27272a"}`,
+                    background: checked ? "#18181b" : "#0f1014",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    aria-label={tool}
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onToggleTool(tool)}
+                    style={{ margin: 0 }}
+                  />
+                  <Text size="xs" c={checked ? "#ffffff" : "#e4e4e7"}>{tool}</Text>
+                </label>
+              );
+            })}
+          </Box>
+          {mcpGroups.length > 0 ? (
+            <>
+              <UnstyledButton
+                onClick={onToggleMcpExpanded}
+                style={{
+                  marginTop: 14,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  color: "#a1a1aa",
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style={{ transform: mcpExpanded ? "rotate(180deg)" : "none" }}>
+                  <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <Text size="xs" fw={600} c="#a1a1aa">
+                  MCP Servers ({mcpGroups.length})
+                </Text>
+              </UnstyledButton>
+              {mcpExpanded ? (
+                <Box style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 8 }}>
+                  {mcpGroups.map((group) => (
+                    <Box key={group.rawServer}>
+                      <Text size="xs" c="#a1a1aa" mb={6}>{group.label}</Text>
+                      {group.tools.length > 0 ? (
+                        <Box style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                          {group.tools.map((tool) => {
+                            const checked = state.selectedTools.includes(tool.raw);
+                            return (
+                              <label
+                                key={tool.raw}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 8,
+                                  padding: "6px 10px",
+                                  borderRadius: 999,
+                                  border: `1px solid ${checked ? "#3f3f46" : "#27272a"}`,
+                                  background: checked ? "#18181b" : "#0f1014",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                <input
+                                  aria-label={tool.label}
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => onToggleTool(tool.raw)}
+                                  style={{ margin: 0 }}
+                                />
+                                <Text size="xs" c={checked ? "#ffffff" : "#e4e4e7"}>{tool.label}</Text>
+                              </label>
+                            );
+                          })}
+                        </Box>
+                      ) : (
+                        <Text size="xs" c="#52525b">No tools exposed for this MCP in the current Claude session.</Text>
+                      )}
+                    </Box>
+                  ))}
+                </Box>
+              ) : null}
+            </>
+          ) : null}
+          </>
+        )}
+        <Box style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          {onCancel ? (
+            <UnstyledButton
+              onClick={onCancel}
+              style={{
+                minWidth: 96,
+                height: 34,
+                borderRadius: 8,
+                border: "1px solid #30303a",
+                background: "#111115",
+                color: "#a1a1aa",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+            >
+              Cancel
+            </UnstyledButton>
+          ) : null}
+          <UnstyledButton
+            onClick={onSave}
+            disabled={required && loading}
+            style={{
+              minWidth: 96,
+              height: 34,
+              borderRadius: 8,
+              background: required && loading ? "#27272a" : "#f4f4f5",
+              color: required && loading ? "#52525b" : "#0c0c0f",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            Save
+          </UnstyledButton>
+        </Box>
+      </Box>
+    </Box>
+  );
+}
+
+function MetaField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <Box>
+      <Text size="xs" c="#71717a">{label}</Text>
+      <Text size="xs" c="#e4e4e7" ff={mono ? "monospace" : undefined} style={{ marginTop: 4, wordBreak: "break-all" }}>
+        {value}
+      </Text>
+    </Box>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M12 8.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zm8 3.5l-1.8-.5a6.8 6.8 0 00-.5-1.2l1-1.6-1.8-1.8-1.6 1a6.8 6.8 0 00-1.2-.5L14 4h-4l-.5 1.8a6.8 6.8 0 00-1.2.5l-1.6-1-1.8 1.8 1 1.6a6.8 6.8 0 00-.5 1.2L4 12l.5 1.8a6.8 6.8 0 00.5 1.2l-1 1.6 1.8 1.8 1.6-1a6.8 6.8 0 001.2.5L10 20h4l.5-1.8a6.8 6.8 0 001.2-.5l1.6 1 1.8-1.8-1-1.6a6.8 6.8 0 00.5-1.2L20 12z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M4 20h4l10-10-4-4L4 16v4zM13 7l4 4"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 

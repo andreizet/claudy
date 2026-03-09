@@ -167,6 +167,54 @@ pub struct SlashCommandInfo {
     pub source: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct ClaudeSessionInit {
+    pub session_id: Option<String>,
+    pub cwd: Option<String>,
+    pub model: Option<String>,
+    pub tools: Vec<String>,
+    pub mcp_servers: Vec<String>,
+}
+
+fn extract_mcp_server_names(value: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| {
+                item.as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        item.as_object().and_then(|object| {
+                            ["name", "display_name", "server_name", "id"]
+                                .iter()
+                                .find_map(|key| object.get(*key).and_then(|v| v.as_str()).map(|s| s.to_string()))
+                        })
+                    })
+            })
+            .collect(),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(key, item)| {
+                item.as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        item.as_object().and_then(|object| {
+                            ["name", "display_name", "server_name", "id"]
+                                .iter()
+                                .find_map(|field| object.get(*field).and_then(|v| v.as_str()).map(|s| s.to_string()))
+                        })
+                    })
+                    .unwrap_or_else(|| key.to_string())
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 #[derive(Serialize, Clone)]
 struct InteractiveOutputPayload {
     session_id: String,
@@ -1085,6 +1133,74 @@ fn fetch_plan_usage(workspace_path: String, session_id: Option<String>) -> Resul
     Ok(usage)
 }
 
+#[tauri::command]
+async fn get_claude_session_init(workspace_path: String) -> Result<ClaudeSessionInit, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+    let cwd = PathBuf::from(&workspace_path);
+    if !cwd.exists() || !cwd.is_dir() {
+        return Err("Workspace path does not exist".to_string());
+    }
+
+    let (claude_bin, full_path) = claude_binary_and_path();
+    let mut cmd = std::process::Command::new(&claude_bin);
+    cmd.current_dir(&cwd);
+    cmd.env("PATH", &full_path);
+    cmd.arg("-p")
+        .arg("--verbose")
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--no-session-persistence")
+        .arg("--permission-mode")
+        .arg("dontAsk")
+        .arg("/status")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if value.get("type").and_then(|v| v.as_str()) != Some("system")
+            || value.get("subtype").and_then(|v| v.as_str()) != Some("init")
+        {
+            continue;
+        }
+
+        let tools = value
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let mcp_servers = extract_mcp_server_names(value.get("mcp_servers"));
+
+        return Ok(ClaudeSessionInit {
+            session_id: value.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            cwd: value.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            model: value.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            tools,
+            mcp_servers,
+        });
+    }
+
+    Err("Unable to fetch Claude session initialization metadata.".to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ─── Tauri commands ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1786,6 +1902,7 @@ fn spawn_claude_message(
     message: String,
     model: String,
     effort: String,
+    allowed_tools: Option<Vec<String>>,
 ) -> Result<(), String> {
     std::thread::spawn(move || {
         let (claude_bin, full_path) = claude_binary_and_path();
@@ -1797,10 +1914,15 @@ fn spawn_claude_message(
            .arg("--output-format").arg("stream-json")
            .arg("--verbose")
            .arg("--include-partial-messages")
+           .arg("--permission-mode").arg("dontAsk")
            .current_dir(&cwd)
            .stdout(std::process::Stdio::piped())
            .stderr(std::process::Stdio::piped())
            .env("PATH", &full_path);
+
+        if let Some(tools) = allowed_tools.as_ref().filter(|tools| !tools.is_empty()) {
+            cmd.arg("--allowedTools").arg(tools.join(","));
+        }
 
         if let Some(session_id) = session_id.as_ref() {
             cmd.arg("--resume").arg(session_id);
@@ -1859,8 +1981,17 @@ fn send_message(
     message: String,
     model: String,
     effort: String,
+    allowed_tools: Option<Vec<String>>,
 ) -> Result<(), String> {
-    spawn_claude_message(app, Some(session_id), cwd, message, model, effort)
+    spawn_claude_message(
+        app,
+        Some(session_id),
+        cwd,
+        message,
+        model,
+        effort,
+        allowed_tools,
+    )
 }
 
 #[tauri::command]
@@ -1870,8 +2001,17 @@ fn send_new_message(
     message: String,
     model: String,
     effort: String,
+    allowed_tools: Option<Vec<String>>,
 ) -> Result<(), String> {
-    spawn_claude_message(app, None, cwd, message, model, effort)
+    spawn_claude_message(
+        app,
+        None,
+        cwd,
+        message,
+        model,
+        effort,
+        allowed_tools,
+    )
 }
 
 // ─── App entry ────────────────────────────────────────────────────────────────
@@ -1887,6 +2027,7 @@ pub fn run() {
             delete_session_file,
             get_session_messages,
             get_claude_account_info,
+            get_claude_session_init,
             get_claude_plan_usage,
             get_usage_dashboard,
             get_workspace_favicon,

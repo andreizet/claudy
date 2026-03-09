@@ -87,6 +87,14 @@ describe("ChatView core message flow", () => {
     const workspace = { ...mockWorkspace, sessions: [] };
     invokeMock.mockImplementation((command: string) => {
       switch (command) {
+        case "get_claude_session_init":
+          return Promise.resolve({
+            session_id: null,
+            cwd: workspace.decoded_path,
+            model: "claude-sonnet-4-6",
+            tools: ["Read", "Edit", "Bash"],
+            mcp_servers: [],
+          });
         case "get_workspace_files":
           return Promise.resolve([]);
         case "get_workspace_slash_commands":
@@ -101,6 +109,10 @@ describe("ChatView core message flow", () => {
     });
 
     renderChat(workspace);
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_claude_session_init", expect.any(Object)));
+    expect(await screen.findByRole("button", { name: "Save" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     const textarea = screen.getByPlaceholderText("Ask for follow-up changes…");
     fireEvent.change(textarea, { target: { value: "hello from new session", selectionStart: 22 } });
@@ -120,6 +132,14 @@ describe("ChatView core message flow", () => {
   it("normal send uses send_message", async () => {
     invokeMock.mockImplementation((command: string) => {
       switch (command) {
+        case "get_claude_session_init":
+          return Promise.resolve({
+            session_id: mockWorkspace.sessions[0].id,
+            cwd: mockWorkspace.decoded_path,
+            model: "claude-sonnet-4-6",
+            tools: ["Read", "Edit", "Bash", "mcp__claude_ai_MCP_AWR__GetKeywordsDifficulty"],
+            mcp_servers: ["Claude AI MCP AWR"],
+          });
         case "get_session_messages":
           return Promise.resolve([]);
         case "get_workspace_files":
@@ -150,9 +170,51 @@ describe("ChatView core message flow", () => {
     });
   });
 
+  it("existing session settings can be loaded and dismissed", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_claude_session_init":
+          return Promise.resolve({
+            session_id: mockWorkspace.sessions[0].id,
+            cwd: mockWorkspace.decoded_path,
+            model: "claude-sonnet-4-6",
+            tools: ["Read", "Edit", "WebFetch", "mcp__claude_ai_MCP_AWR__GetKeywordsDifficulty"],
+            mcp_servers: ["Claude AI MCP AWR"],
+          });
+        case "get_session_messages":
+          return Promise.resolve([]);
+        case "get_workspace_files":
+          return Promise.resolve([]);
+        case "get_workspace_slash_commands":
+          return Promise.resolve([]);
+        case "get_workspace_favicon":
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    renderChat(mockWorkspace);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_session_messages", expect.any(Object)));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_claude_session_init", expect.any(Object)));
+
+    fireEvent.click(screen.getByTitle("Session settings"));
+    expect(await screen.findByText("Built-in Tools (3)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument());
+  });
+
   it("slash command opens interactive overlay instead of normal send", async () => {
     invokeMock.mockImplementation((command: string) => {
       switch (command) {
+        case "get_claude_session_init":
+          return Promise.resolve({
+            session_id: mockWorkspace.sessions[0].id,
+            cwd: mockWorkspace.decoded_path,
+            model: "claude-sonnet-4-6",
+            tools: ["Read", "Edit", "Bash", "mcp__claude_ai_MCP_AWR__GetKeywordsDifficulty"],
+            mcp_servers: ["Claude AI MCP AWR"],
+          });
         case "get_session_messages":
           return Promise.resolve([]);
         case "get_workspace_files":
@@ -223,5 +285,69 @@ describe("ChatView core message flow", () => {
 
     fireEvent.click(within(badge).getByRole("button"));
     expect(screen.queryByText("src/App.tsx")).not.toBeInTheDocument();
+  });
+
+  it("uses the selected tool allowlist from the session card", async () => {
+    const listeners = new Map<string, (payload: { payload: string }) => void>();
+    listenMock.mockImplementation((event: string, callback: (payload: { payload: string }) => void) => {
+      listeners.set(event, callback);
+      return Promise.resolve(() => listeners.delete(event));
+    });
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_session_messages":
+          return Promise.resolve([]);
+        case "get_workspace_files":
+          return Promise.resolve([]);
+        case "get_workspace_slash_commands":
+          return Promise.resolve([]);
+        case "get_workspace_favicon":
+          return Promise.resolve(null);
+        case "send_message":
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    renderChat(mockWorkspace);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_session_messages", expect.any(Object)));
+
+    listeners.get("claude-stream")?.({
+      payload: JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: mockWorkspace.sessions[0].id,
+        cwd: mockWorkspace.decoded_path,
+        model: "claude-sonnet-4-6",
+        tools: ["Read", "Edit", "Bash", "mcp__claude_ai_MCP_AWR__GetKeywordsDifficulty"],
+        mcp_servers: ["Claude AI MCP AWR"],
+      }),
+    });
+
+    fireEvent.click(screen.getByTitle("Session settings"));
+    expect(await screen.findByRole("button", { name: "Save" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Disable all"));
+    fireEvent.click(screen.getByLabelText("Read"));
+    fireEvent.click(screen.getByLabelText("Bash"));
+    expect(screen.queryByLabelText("GetKeywordsDifficulty")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /MCP Servers \(1\)/ }));
+    expect(screen.getByText("Claude AI MCP AWR")).toBeInTheDocument();
+    expect(screen.getByLabelText("GetKeywordsDifficulty")).toBeInTheDocument();
+    expect(screen.queryByText("mcp__claude_ai_MCP_AWR__GetKeywordsDifficulty")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("GetKeywordsDifficulty"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const textarea = screen.getByPlaceholderText("Ask for follow-up changes…");
+    fireEvent.change(textarea, { target: { value: "continue this", selectionStart: 13 } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenLastCalledWith("send_message", expect.objectContaining({
+        sessionId: mockWorkspace.sessions[0].id,
+        message: "continue this",
+        allowedTools: ["Read", "Bash", "mcp__claude_ai_MCP_AWR__GetKeywordsDifficulty"],
+      }));
+    });
   });
 });

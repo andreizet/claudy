@@ -103,7 +103,7 @@ describe("App tab and session flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "open-claudy" }));
 
     await waitFor(() => expect(screen.getByText("chat-claudy")).toBeInTheDocument());
-    expect(screen.getByText("claudy")).toBeInTheDocument();
+    expect(screen.getByText("claudy - Implement the login flow")).toBeInTheDocument();
   });
 
   it("plus creates a home tab and choosing a project replaces that home tab", async () => {
@@ -119,8 +119,8 @@ describe("App tab and session flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "open-backend" }));
     await waitFor(() => expect(screen.getByText("chat-backend")).toBeInTheDocument());
 
-    expect(screen.getByText("backend")).toBeInTheDocument();
-    expect(screen.getByText("claudy")).toBeInTheDocument();
+    expect(screen.getByText("backend - Investigate the API")).toBeInTheDocument();
+    expect(screen.getByText("claudy - Implement the login flow")).toBeInTheDocument();
   });
 
   it("closing the active tab falls back to the previous available tab", async () => {

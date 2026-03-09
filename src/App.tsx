@@ -8,7 +8,7 @@ import ChatView from "./views/ChatView";
 
 type AppTab =
   | { id: string; kind: "home" }
-  | { id: string; kind: "chat"; workspace: DiscoveredWorkspace };
+  | { id: string; kind: "chat"; workspace: DiscoveredWorkspace; sessionTitle: string | null };
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 
 function createTabId(): string {
@@ -37,16 +37,26 @@ export default function App() {
 
   const openWorkspaceInNewTab = (workspace: DiscoveredWorkspace) => {
     const id = createTabId();
-    setTabs([{ id, kind: "chat", workspace }]);
+    setTabs([{ id, kind: "chat", workspace, sessionTitle: workspace.sessions[0]?.first_message ?? null }]);
     setActiveTabId(id);
   };
 
   const replaceActiveTabWithWorkspace = (workspace: DiscoveredWorkspace) => {
     setTabs((prev) =>
       prev.map((t) =>
-        t.id === activeTabId ? { id: activeTabId, kind: "chat", workspace } : t
+        t.id === activeTabId
+          ? { id: activeTabId, kind: "chat", workspace, sessionTitle: workspace.sessions[0]?.first_message ?? null }
+          : t
       )
     );
+  };
+
+  const updateTabSessionTitle = (tabId: string, sessionTitle: string | null) => {
+    setTabs((prev) => prev.map((tab) => (
+      tab.id === tabId && tab.kind === "chat"
+        ? { ...tab, sessionTitle }
+        : tab
+    )));
   };
 
   const handleCreateSession = async (workspacePath: string, replaceActive = false) => {
@@ -162,7 +172,9 @@ export default function App() {
     >
       {tabs.map((tab) => {
         const active = tab.id === activeTabId;
-        const label = tab.kind === "chat" ? tab.workspace.display_name : "Home";
+        const label = tab.kind === "chat"
+          ? `${tab.workspace.display_name} - ${tab.sessionTitle ?? "Session"}`
+          : "Home";
         const tabIcon = tab.kind === "chat" ? favicons[tab.workspace.encoded_name] ?? null : null;
         return (
           <Box
@@ -257,6 +269,7 @@ export default function App() {
           workspace={activeTab.workspace}
           accountInfo={accountInfo}
           mainHeader={tabHeader}
+          onSessionTitleChange={(sessionTitle) => updateTabSessionTitle(activeTab.id, sessionTitle)}
           onBack={() =>
             setTabs((prev) =>
               prev.map((t) =>

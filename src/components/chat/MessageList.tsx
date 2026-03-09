@@ -326,7 +326,7 @@ function GeneratingIndicator() {
         border: "1px solid #23232a",
       }}
     >
-      <Text size="xs" c="#71717a">Generating</Text>
+      <Text size="sm" c="#71717a">Generating</Text>
       <Box style={{ display: "flex", alignItems: "center", gap: 4 }}>
         {[0, 1, 2].map((index) => (
           <Box
@@ -420,7 +420,7 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style={{ color: "#52525b", flexShrink: 0 }}>
             <path d="M4 17l6-6-6-6M12 19h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-          <Text size="xs" ff="monospace" c="#a1a1aa">{display || cmdMsg || cmdName}</Text>
+          <Text size="sm" ff="monospace" c="#d4d4d8">{display || cmdMsg || cmdName}</Text>
         </Box>
       </Box>
     );
@@ -440,7 +440,7 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
             background: "#18181b",
             border: "1px solid #27272a",
             borderRadius: 8,
-            fontSize: 11,
+            fontSize: 12,
             fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace',
             color: "#a1a1aa",
             whiteSpace: "pre-wrap",
@@ -465,7 +465,7 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
           borderRadius: "14px 14px 4px 14px",
           padding: "10px 14px",
           color: "#e4e4e7",
-          fontSize: 13,
+          fontSize: 14,
           lineHeight: 1.6,
           whiteSpace: "pre-wrap",
           wordBreak: "break-word",
@@ -526,7 +526,7 @@ function AssistantBlock({
 
 function AssistantText({ text }: { text: string }) {
   return (
-    <Box className="md-body" style={{ color: "#d4d4d8", fontSize: 13, lineHeight: 1.7, wordBreak: "break-word" }}>
+    <Box className="md-body" style={{ color: "#d4d4d8", fontSize: 14, lineHeight: 1.75, wordBreak: "break-word" }}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -542,7 +542,7 @@ function AssistantText({ text }: { text: string }) {
                 borderRadius: 8,
                 padding: "12px 14px",
                 margin: "10px 0",
-                fontSize: 12,
+                fontSize: 13,
                 fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace',
                 color: "#a1a1aa",
                 overflowX: "auto",
@@ -560,7 +560,7 @@ function AssistantText({ text }: { text: string }) {
                   background: "#27272a",
                   borderRadius: 4,
                   padding: "1px 5px",
-                  fontSize: 12,
+                  fontSize: 13,
                   fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace',
                   color: "#a1a1aa",
                 }}>
@@ -570,9 +570,9 @@ function AssistantText({ text }: { text: string }) {
             }
             return <code style={{ fontFamily: "inherit", background: "none" }}>{children}</code>;
           },
-          h1: ({ children }) => <h1 style={{ color: "#f4f4f5", fontSize: 16, fontWeight: 600, margin: "16px 0 8px" }}>{children}</h1>,
-          h2: ({ children }) => <h2 style={{ color: "#f4f4f5", fontSize: 14, fontWeight: 600, margin: "14px 0 6px" }}>{children}</h2>,
-          h3: ({ children }) => <h3 style={{ color: "#e4e4e7", fontSize: 13, fontWeight: 600, margin: "12px 0 4px" }}>{children}</h3>,
+          h1: ({ children }) => <h1 style={{ color: "#f4f4f5", fontSize: 18, fontWeight: 600, margin: "16px 0 8px" }}>{children}</h1>,
+          h2: ({ children }) => <h2 style={{ color: "#f4f4f5", fontSize: 16, fontWeight: 600, margin: "14px 0 6px" }}>{children}</h2>,
+          h3: ({ children }) => <h3 style={{ color: "#e4e4e7", fontSize: 15, fontWeight: 600, margin: "12px 0 4px" }}>{children}</h3>,
           ul: ({ children }) => <ul style={{ margin: "6px 0 10px", paddingLeft: 20 }}>{children}</ul>,
           ol: ({ children }) => <ol style={{ margin: "6px 0 10px", paddingLeft: 20 }}>{children}</ol>,
           li: ({ children }) => <li style={{ marginBottom: 3 }}>{children}</li>,
@@ -587,7 +587,7 @@ function AssistantText({ text }: { text: string }) {
           strong: ({ children }) => <strong style={{ color: "#f4f4f5", fontWeight: 600 }}>{children}</strong>,
           hr: () => <hr style={{ border: "none", borderTop: "1px solid #27272a", margin: "12px 0" }} />,
           table: ({ children }) => (
-            <table style={{ borderCollapse: "collapse", width: "100%", margin: "8px 0", fontSize: 12 }}>{children}</table>
+            <table style={{ borderCollapse: "collapse", width: "100%", margin: "8px 0", fontSize: 13 }}>{children}</table>
           ),
           th: ({ children }) => (
             <th style={{ border: "1px solid #27272a", padding: "4px 8px", background: "#18181b", textAlign: "left", color: "#a1a1aa" }}>{children}</th>
@@ -665,9 +665,9 @@ function ToolCard({ block, result }: { block: ContentBlockToolUse; result?: { co
       >
         <ToolIcon name={block.name} />
         <Box style={{ flex: 1, minWidth: 0 }}>
-          <Text size="xs" fw={500} c={result?.isError ? "#f87171" : "#a1a1aa"}>{label}</Text>
+          <Text fw={500} c={result?.isError ? "#f87171" : "#d4d4d8"} style={{ fontSize: 14 }}>{label}</Text>
           {detail && (
-            <Text size="xs" c="#71717a" truncate ff="monospace" mt={1}>
+            <Text c="#a1a1aa" truncate ff="monospace" mt={1} style={{ fontSize: 14 }}>
               {detail}
             </Text>
           )}
@@ -689,7 +689,7 @@ function ToolCard({ block, result }: { block: ContentBlockToolUse; result?: { co
             edits.map((edit, i) => (
               <Box key={i}>
                 {edits.length > 1 && (
-                  <Text size="xs" c="#3f3f46" style={{ padding: "4px 14px", borderBottom: "1px solid #1f1f23", fontFamily: "monospace" }}>
+                  <Text c="#71717a" style={{ padding: "4px 14px", borderBottom: "1px solid #1f1f23", fontFamily: "monospace", fontSize: 14 }}>
                     edit {i + 1} of {edits.length}
                   </Text>
                 )}
