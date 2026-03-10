@@ -1,12 +1,16 @@
 {
   "name": "claudy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
+    "sync:version": "node scripts/sync-version.mjs",
+    "predev": "npm run sync:version",
     "dev": "vite",
+    "prebuild": "npm run sync:version",
     "build": "tsc && vite build",
     "test": "vitest run",
     "preview": "vite preview",
+    "pretauri": "npm run sync:version",
     "tauri": "tauri"
   },
   "dependencies": {

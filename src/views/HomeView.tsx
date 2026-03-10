@@ -4,8 +4,10 @@ import { BarChart3, ChevronDown, Cog, FolderKanban, Plus, Search, Star } from "l
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "../types";
 import sidebarTitle from "../assets/sidebar-title.svg";
 import { md5 } from "../shared/md5";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import packageJson from "../../package.json";
 import UsageDashboardView from "./UsageDashboardView";
 import { AppSettings, loadAppSettings, saveAppSettings } from "../shared/settings";
 import {
@@ -119,6 +121,7 @@ export default function HomeView({
   const [skillStatus, setSkillStatus] = useState<SkillStatusMessage | null>(null);
   const [folderInstallInFlight, setFolderInstallInFlight] = useState(false);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState(packageJson.version);
 
   useEffect(() => {
     window.localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(Array.from(favorites)));
@@ -155,6 +158,14 @@ export default function HomeView({
           : "Projects"
     );
   }, [activeNav, onViewLabelChange]);
+
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => {
+        setAppVersion(packageJson.version);
+      });
+  }, []);
 
   useEffect(() => {
     if (activeNav !== "settings" || settingsTab !== "general" || claudeInstallations.length > 0) return;
@@ -476,7 +487,7 @@ export default function HomeView({
           </Group>
           <Box style={{ display: "flex", justifyContent: "center", marginTop: 4 }}>
             <Text size="xs" c="#52525b" lh={1.2} style={{ flexShrink: 0 }}>
-              0.1.0
+              {appVersion}
             </Text>
           </Box>
         </Box>
