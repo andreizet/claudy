@@ -167,6 +167,21 @@ function shortenPath(fullPath: string): string {
   return fullPath;
 }
 
+function projectColorFor(name: string): string {
+  const colors = ["#2a3f5c", "#1e4d3a", "#4d2a2a", "#352a4d", "#4d3b1e", "#1e3d4d"];
+  let hash = 0;
+  for (let index = 0; index < name.length; index += 1) {
+    hash = name.charCodeAt(index) + ((hash << 5) - hash);
+  }
+  return colors[Math.abs(hash) % colors.length];
+}
+
+function projectInitials(name: string): string {
+  const words = name.split(/[-_.\s]+/).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+
 function relativeTime(secs: string): string {
   if (!secs) return "";
   const diff = Date.now() - Number(secs) * 1000;
@@ -1266,64 +1281,86 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     : "https://www.gravatar.com/avatar/?s=80&d=mp";
 
   return (
-    <Box style={{ display: "flex", height: "100vh", background: "#0c0c0f" }}>
+    <Box style={{ display: "flex", height: "100vh", background: "#07090d" }}>
       {/* ── Sidebar ── */}
       <Box
         style={{
-          width: 320,
+          width: 276,
           flexShrink: 0,
-          background: "#131316",
+          background: "linear-gradient(180deg, #11141b 0%, #0f1218 100%)",
           borderRight: "1px solid #1f1f23",
           display: "flex",
           flexDirection: "column",
         }}
       >
-        {/* macOS traffic light spacer */}
-        <Box style={{ height: 52 }} />
-
         {/* Back button */}
-        <Box px={14} pb={8}>
+        <Box px={12} pt={12} pb={10} style={{ borderBottom: "1px solid #1c212b" }}>
           <UnstyledButton
             onClick={onBack}
             style={{
               display: "flex",
               alignItems: "center",
               gap: 6,
-              color: "#52525b",
+              color: "#7f8aa0",
               fontSize: 12,
               padding: "3px 0",
             }}
-            onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = "#a1a1aa")}
-            onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = "#52525b")}
+            onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = "#c8d0dd")}
+            onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = "#7f8aa0")}
           >
             <ChevronLeft />
-            <Text size="xs" inherit>All projects</Text>
+            <Text size="xs" inherit>Home</Text>
           </UnstyledButton>
         </Box>
 
         {/* Project name */}
-        <Box px={14} pb={12}>
-          <Group gap={8} align="center">
+        <Box px={12} py={12}>
+          <Group gap={10} align="center" wrap="nowrap">
             {projectIcon ? (
               <Box
                 component="img"
                 src={projectIcon}
                 alt={`${workspace.display_name} icon`}
                 style={{
-                  width: 14,
-                  height: 14,
+                  width: 28,
+                  height: 28,
                   objectFit: "contain",
-                  borderRadius: 3,
+                  borderRadius: 7,
                   flexShrink: 0,
+                  background: "#181c25",
+                  padding: 6,
                 }}
               />
             ) : (
-              <FolderIcon />
+              <Box
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 7,
+                  background: projectColorFor(workspace.display_name),
+                  border: "1px solid rgba(255,255,255,0.05)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "#f4f4f5",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  flexShrink: 0,
+                }}
+              >
+                {projectInitials(workspace.display_name)}
+              </Box>
             )}
             <Text size="sm" fw={600} c="#e4e4e7" truncate style={{ flex: 1, minWidth: 0 }}>
               {workspace.display_name}
             </Text>
           </Group>
+        </Box>
+
+        <Box px={12} pb={8}>
+          <Text size="10px" fw={700} c="#5f6b85" tt="uppercase" style={{ letterSpacing: 1.2 }}>
+            Sessions
+          </Text>
         </Box>
 
         {/* Session list */}
@@ -1373,13 +1410,13 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
           </Box>
         </ScrollArea>
 
-        <Box px={14} pb={14} pt={8} style={{ borderTop: "1px solid #1f1f23" }}>
+        <Box px={12} pb={12} pt={8} style={{ borderTop: "1px solid #1c212b" }}>
           <UnstyledButton
             onClick={handleStartNewSession}
             style={{
               width: "100%",
-              height: 34,
-              borderRadius: 10,
+              height: 30,
+              borderRadius: 9,
               border: "1px solid #e5be48",
               background: "#f3c63b",
               display: "flex",
@@ -1405,7 +1442,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
       </Box>
 
       {/* ── Main panel ── */}
-      <Box style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
+      <Box style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative", background: "#05070b" }}>
         {mainHeader}
 
         {/* Messages */}
@@ -1428,9 +1465,9 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
         )}
 
         {/* Input area */}
-        <Box style={{ borderTop: "1px solid #1f1f23", background: "#0e0e12", flexShrink: 0, padding: "12px 20px" }}>
+        <Box style={{ borderTop: "1px solid #171c24", background: "#07090d", flexShrink: 0, padding: "10px 24px 16px" }}>
           {/* Toolbar */}
-          <Box style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+          <Box style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, maxWidth: 820, width: "100%", marginInline: "auto" }}>
             <ModelSelect value={model} onChange={setModel} />
             <EffortSelect value={effort} onChange={setEffort} />
             <Box style={{ marginLeft: "auto" }}>
@@ -1458,15 +1495,16 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
             </Box>
           </Box>
           {/* Textarea row */}
-          <Box style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 40px", alignItems: "center", gap: 8 }}>
+          <Box style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 40px", alignItems: "center", gap: 8, maxWidth: 820, width: "100%", marginInline: "auto" }}>
             <Box style={{ flex: 1, position: "relative" }}>
               <Box
                 style={{
-                  background: "#18181b",
-                  border: "1px solid #27272a",
-                  borderRadius: 10,
+                  background: "#11151c",
+                  border: "1px solid #2a3243",
+                  borderRadius: 14,
                   padding: "10px 14px",
                   opacity: streaming || loadingMessages ? 0.5 : 1,
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
                 }}
               >
                 {selectedFileRefs.length > 0 ? (
@@ -1801,14 +1839,16 @@ export function SessionItem({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        width: "calc(100% - 8px)",
-        marginLeft: 8,
-        padding: "7px 14px",
-        borderLeft: active ? "2px solid #FFE100" : "2px solid transparent",
-        borderTop: active ? "1px solid #2a2a32" : "1px solid transparent",
-        borderRight: active ? "1px solid #2a2a32" : "1px solid transparent",
-        borderBottom: active ? "1px solid #2a2a32" : "1px solid transparent",
-        background: active ? "#1e1e24" : hovered ? "#18181b" : "transparent",
+        width: "100%",
+        marginLeft: 0,
+        padding: "8px 8px",
+        borderLeft: active ? "2px solid #f3c63b" : "2px solid transparent",
+        borderTop: active ? "1px solid #2a3243" : "1px solid transparent",
+        borderRight: active ? "1px solid #2a3243" : "1px solid transparent",
+        borderBottom: active ? "1px solid #2a3243" : "1px solid transparent",
+        borderRadius: 10,
+        background: active ? "#171c26" : hovered ? "#141922" : "transparent",
+        boxShadow: "none",
         textAlign: "left",
         display: "flex",
         alignItems: "center",
@@ -1832,7 +1872,18 @@ export function SessionItem({
         </>
       ) : (
         <>
-          <SessionActivityIndicator activity={activity} />
+          {loading || activity === "generating" ? (
+            <SessionActivityIndicator activity={activity} />
+          ) : (
+            <ActionIconButton
+              visible={hovered || pinned}
+              active={pinned}
+              title={pinned ? "Unpin session" : "Pin session"}
+              onClick={onPin}
+            >
+              <PinIcon />
+            </ActionIconButton>
+          )}
           {renaming ? (
             <input
               aria-label="Session name"
@@ -1866,26 +1917,20 @@ export function SessionItem({
               }}
             />
           ) : (
-            <Text
-              size="xs"
-              fw={active ? 500 : 400}
-              c={active ? "#f4f4f5" : hovered ? "#d4d4d8" : "#b4b4bd"}
-              style={{ flex: 1, minWidth: 0, lineHeight: 1.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", transition: "color 180ms ease" }}
-            >
-              {title}
-            </Text>
+            <Box style={{ flex: 1, minWidth: 0 }}>
+              <Text
+                size="xs"
+                fw={active ? 600 : 500}
+                c={active ? "#f1f4fa" : hovered ? "#d4dbe8" : "#a0acc0"}
+                style={{ lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", transition: "color 180ms ease" }}
+              >
+                {title}
+              </Text>
+              <Text size="11px" c={active ? "#8d99ad" : "#6f7b90"} mt={3}>
+                {relativeTime(session.modified_at)}
+              </Text>
+            </Box>
           )}
-          <Text size="xs" c="#3f3f46" style={{ flexShrink: 0, fontSize: 11 }}>
-            {loading ? "Loading..." : relativeTime(session.modified_at)}
-          </Text>
-          <ActionIconButton
-            visible={hovered || pinned}
-            active={pinned}
-            title={pinned ? "Unpin session" : "Pin session"}
-            onClick={onPin}
-          >
-            <PinIcon />
-          </ActionIconButton>
           <ActionIconButton
             visible={hovered && !renaming}
             active={false}
@@ -1914,8 +1959,8 @@ function SessionActivityIndicator({ activity }: { activity?: SessionActivityStat
       aria-label={activity ? `Session ${activity}` : undefined}
       title={activity === "generating" ? "Generating response" : activity === "completed" ? "Response completed" : undefined}
       style={{
-        width: 16,
-        height: 16,
+        width: 10,
+        height: 10,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -1924,18 +1969,38 @@ function SessionActivityIndicator({ activity }: { activity?: SessionActivityStat
       }}
     >
       {activity === "generating" ? (
-        <>
-          <LoaderCircle size={13} strokeWidth={1.9} style={{ animation: "claudySessionSpin 1s linear infinite" }} />
+        <Box style={{ marginLeft: 12 }}>
+          <LoaderCircle size={10} strokeWidth={2} style={{ animation: "claudySessionSpin 1s linear infinite" }} />
           <style>{`
             @keyframes claudySessionSpin {
               from { transform: rotate(0deg); }
               to { transform: rotate(360deg); }
             }
           `}</style>
-        </>
+        </Box>
       ) : activity === "completed" ? (
-        <Check size={13} strokeWidth={2.2} />
+        <Check size={10} strokeWidth={2.4} />
       ) : null}
+    </Box>
+  );
+}
+
+function SidebarLoadingIndicator() {
+  return (
+    <Box
+      aria-label="Session loading"
+      title="Loading session"
+      style={{
+        width: 42,
+        height: 24,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "flex-end",
+        flexShrink: 0,
+        color: "#8d99ad",
+      }}
+    >
+      <LoaderCircle size={13} strokeWidth={1.9} style={{ animation: "claudySessionSpin 1s linear infinite" }} />
     </Box>
   );
 }

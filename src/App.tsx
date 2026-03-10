@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type MouseEvent } from "react";
 import { Box, Text, UnstyledButton } from "@mantine/core";
 import { Folder, Plus, X } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,8 +10,10 @@ import HomeView from "./views/HomeView";
 import ChatView from "./views/ChatView";
 import SplashScreen from "./components/SplashScreen";
 
+type HomeTabLabel = "Projects" | "Usage" | "Settings";
+
 type AppTab =
-  | { id: string; kind: "home" }
+  | { id: string; kind: "home"; viewLabel: HomeTabLabel }
   | { id: string; kind: "chat"; workspace: DiscoveredWorkspace; sessionTitle: string | null };
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 
@@ -31,7 +33,7 @@ function createTabId(): string {
 }
 
 function createHomeTab(id = createTabId()): AppTab {
-  return { id, kind: "home" };
+  return { id, kind: "home", viewLabel: "Projects" };
 }
 
 function isDiscoveredWorkspace(value: unknown): value is DiscoveredWorkspace {
@@ -67,7 +69,11 @@ function loadStoredTabs(): { tabs: AppTab[]; activeTabId: string | null } {
       const candidate = tab as Partial<AppTab>;
       if (typeof candidate.id !== "string") return [];
       if (candidate.kind === "home") {
-        return [{ id: candidate.id, kind: "home" }];
+        return [{
+          id: candidate.id,
+          kind: "home",
+          viewLabel: candidate.viewLabel === "Usage" || candidate.viewLabel === "Settings" ? candidate.viewLabel : "Projects",
+        }];
       }
       if (
         candidate.kind === "chat"
@@ -141,6 +147,20 @@ export default function App() {
         }
         changed = true;
         return { ...tab, sessionTitle };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
+  const updateHomeTabLabel = useCallback((tabId: string, viewLabel: HomeTabLabel) => {
+    setTabs((prev) => {
+      let changed = false;
+      const next = prev.map((tab) => {
+        if (tab.id !== tabId || tab.kind !== "home" || tab.viewLabel === viewLabel) {
+          return tab;
+        }
+        changed = true;
+        return { ...tab, viewLabel };
       });
       return changed ? next : prev;
     });
@@ -302,37 +322,51 @@ export default function App() {
   const tabHeader = (
     <Box
       style={{
-        height: 40,
+        height: 50,
         borderBottom: "1px solid #1f1f23",
         display: "flex",
-        alignItems: "stretch",
-        background: "#0f1115",
+        alignItems: "center",
+        gap: 6,
+        padding: "0 12px",
+        background: "#07090d",
         flexShrink: 0,
+        overflowX: "auto",
       }}
     >
       {tabs.map((tab) => {
         const active = tab.id === activeTabId;
         const label = tab.kind === "chat"
           ? `${tab.workspace.display_name} - ${tab.sessionTitle ?? "Session"}`
-          : "New";
+          : tab.viewLabel;
         const tabIcon = tab.kind === "chat" ? favicons[tab.workspace.encoded_name] ?? null : null;
+        const handleMiddleClickClose = (event: MouseEvent) => {
+          if (event.button !== 1) return;
+          event.preventDefault();
+          event.stopPropagation();
+          closeTab(tab.id);
+        };
         return (
           <Box
             key={tab.id}
             className="app-tab"
+            onMouseDown={handleMiddleClickClose}
             style={{
-              minWidth: 140,
-              maxWidth: 220,
-              borderRight: "1px solid #1f1f23",
-              borderBottom: active ? "1px solid #0c0c0f" : "1px solid #1f1f23",
-              background: active ? "#171a20" : "#12151b",
+              minWidth: 150,
+              maxWidth: 260,
+              height: 28,
+              border: "1px solid #2a3243",
+              borderRadius: 8,
+              background: active ? "#171c26" : "#11151c",
               display: "flex",
               alignItems: "center",
-              transition: "background 180ms ease, border-color 180ms ease",
+              boxShadow: active ? "inset 0 1px 0 rgba(255,255,255,0.03)" : "none",
+              transition: "background 180ms ease, border-color 180ms ease, color 180ms ease",
+              flexShrink: 0,
             }}
           >
             <UnstyledButton
               onClick={() => setActiveTabId(tab.id)}
+              onMouseDown={handleMiddleClickClose}
               className="app-tab__button"
               style={{
                 display: "flex",
@@ -340,9 +374,9 @@ export default function App() {
                 gap: 8,
                 minWidth: 0,
                 flex: 1,
-                padding: "0 10px",
+                padding: "0 12px",
                 height: "100%",
-                color: active ? "#f4f4f5" : "#a1a1aa",
+                color: active ? "#e7e9f2" : "#98a3b8",
                 transition: "color 180ms ease",
               }}
             >
@@ -368,11 +402,11 @@ export default function App() {
               title={`Close ${label} tab`}
               className="app-tab-close"
               style={{
-                width: 24,
-                height: 24,
-                marginRight: 8,
+                width: 22,
+                height: 22,
+                marginRight: 6,
                 borderRadius: 4,
-                color: "#71717a",
+                color: "#66758f",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -388,13 +422,16 @@ export default function App() {
       <UnstyledButton
         onClick={() => {
           const id = createTabId();
-          setTabs((prev) => [...prev, { id, kind: "home" }]);
+          setTabs((prev) => [...prev, createHomeTab(id)]);
           setActiveTabId(id);
         }}
         style={{
-          width: 36,
-          borderRight: "1px solid #1f1f23",
-          color: "#a1a1aa",
+          width: 28,
+          height: 28,
+          border: "1px solid #1f2531",
+          borderRadius: 8,
+          color: "#98a3b8",
+          background: "#0d1118",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -419,7 +456,7 @@ export default function App() {
           onBack={() =>
             setTabs((prev) =>
               prev.map((t) =>
-                t.id === activeTab.id ? { id: activeTab.id, kind: "home" } : t
+                t.id === activeTab.id ? createHomeTab(activeTab.id) : t
               )
             )
           }
@@ -436,6 +473,7 @@ export default function App() {
         isLoading={isLoading}
         accountInfo={accountInfo}
         mainHeader={tabHeader}
+        onViewLabelChange={(viewLabel) => updateHomeTabLabel(activeTab.id, viewLabel)}
         onOpenWorkspace={replaceActiveTabWithWorkspace}
         onCreateSession={(workspacePath) => void handleCreateSession(workspacePath, true)}
       />

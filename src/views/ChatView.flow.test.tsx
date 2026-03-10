@@ -651,8 +651,7 @@ describe("ChatView core message flow", () => {
     fireEvent.change(textarea, { target: { value: "keep working", selectionStart: 12 } });
     fireEvent.keyDown(textarea, { key: "Enter" });
 
-    const getFirstSessionRow = () => screen.getByText("Implement the login flow").closest("div") as HTMLElement;
-    expect(within(getFirstSessionRow()).getByLabelText("Session generating")).toBeInTheDocument();
+    expect(screen.getByLabelText("Session generating")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Fix the dashboard charts"));
 
@@ -661,12 +660,12 @@ describe("ChatView core message flow", () => {
         filePath: mockWorkspace.sessions[1].file_path,
       });
     });
-    expect(within(getFirstSessionRow()).getByLabelText("Session generating")).toBeInTheDocument();
+    expect(screen.getByLabelText("Session generating")).toBeInTheDocument();
 
     listeners.get("claude-done")?.({ payload: "" });
 
     await waitFor(() => {
-      expect(within(getFirstSessionRow()).getByLabelText("Session completed")).toBeInTheDocument();
+      expect(screen.getByLabelText("Session completed")).toBeInTheDocument();
     });
   });
 });

@@ -225,7 +225,8 @@ function MessageList({ messages, streamMessages, streamBlocks, showGenerating, p
   return (
     <Box style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
     <ScrollArea h="100%" viewportRef={viewportRef}>
-      <Box style={{ padding: "24px 10rem" }}>
+      <Box style={{ padding: "24px 24px 140px" }}>
+        <Box style={{ maxWidth: 820, margin: "0 auto", width: "100%" }}>
         {shouldVirtualize ? (
           <Box style={{ height: totalHeight, position: "relative" }}>
             {visibleItems.map((item, index) => {
@@ -263,6 +264,7 @@ function MessageList({ messages, streamMessages, streamBlocks, showGenerating, p
             ))}
           </Box>
         )}
+        </Box>
       </Box>
     </ScrollArea>
 

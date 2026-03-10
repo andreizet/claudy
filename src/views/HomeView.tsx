@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { Box, Text, TextInput, Button, Group, Stack, ScrollArea, UnstyledButton, Skeleton, Switch, Tooltip } from "@mantine/core";
-import { ChevronDown, Cog, Plus, Search, Star } from "lucide-react";
+import { BarChart3, ChevronDown, Cog, FolderKanban, Plus, Search, Star } from "lucide-react";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "../types";
 import sidebarTitle from "../assets/sidebar-title.svg";
 import { md5 } from "../shared/md5";
@@ -86,13 +86,24 @@ interface Props {
   accountInfo: ClaudeAccountInfo | null;
   onOpenWorkspace: (workspace: DiscoveredWorkspace) => void;
   onCreateSession: (workspacePath: string) => void;
+  onViewLabelChange?: (label: "Projects" | "Usage" | "Settings") => void;
   mainHeader?: React.ReactNode;
 }
 
-export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWorkspace, onCreateSession, mainHeader }: Props) {
+export default function HomeView({
+  workspaces,
+  isLoading,
+  accountInfo,
+  onOpenWorkspace,
+  onCreateSession,
+  onViewLabelChange,
+  mainHeader,
+}: Props) {
   const [activeNav, setActiveNav] = useState<NavItem>("projects");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [search, setSearch] = useState("");
+  const [projectSort, setProjectSort] = useState<"recent" | "name" | "sessions">("recent");
+  const [projectSortDirection, setProjectSortDirection] = useState<"asc" | "desc">("desc");
   const [favorites, setFavorites] = useState<Set<string>>(loadFavoriteWorkspaces);
   const [favicons, setFavicons] = useState<Record<string, string | null>>({});
   const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings);
@@ -134,6 +145,16 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
   useEffect(() => {
     saveAppSettings(appSettings);
   }, [appSettings]);
+
+  useEffect(() => {
+    onViewLabelChange?.(
+      activeNav === "usage"
+        ? "Usage"
+        : activeNav === "settings"
+          ? "Settings"
+          : "Projects"
+    );
+  }, [activeNav, onViewLabelChange]);
 
   useEffect(() => {
     if (activeNav !== "settings" || settingsTab !== "general" || claudeInstallations.length > 0) return;
@@ -379,11 +400,20 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
       : filtered;
   const sortedListed = useMemo(
     () => [...listed].sort((a, b) => {
+      if (projectSort === "name") {
+        const result = a.display_name.localeCompare(b.display_name);
+        return projectSortDirection === "asc" ? result : -result;
+      }
+      if (projectSort === "sessions") {
+        const result = b.sessions.length - a.sessions.length || a.display_name.localeCompare(b.display_name);
+        return projectSortDirection === "desc" ? result : -result;
+      }
       const aLast = Number(a.sessions[0]?.modified_at ?? 0);
       const bLast = Number(b.sessions[0]?.modified_at ?? 0);
-      return bLast - aLast || a.display_name.localeCompare(b.display_name);
+      const result = bLast - aLast || a.display_name.localeCompare(b.display_name);
+      return projectSortDirection === "desc" ? result : -result;
     }),
-    [listed]
+    [listed, projectSort, projectSortDirection]
   );
   const pinnedProjects = useMemo(
     () => sortedListed.filter((workspace) => favorites.has(workspace.encoded_name)),
@@ -396,6 +426,14 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
     : "https://www.gravatar.com/avatar/?s=80&d=mp";
   const accountName = accountInfo?.display_name ?? "Claude account";
   const accountSubtitle = accountInfo?.email ?? "No account detected";
+  const handleProjectSortChange = (nextSort: "recent" | "name" | "sessions") => {
+    if (projectSort === nextSort) {
+      setProjectSortDirection((current) => current === "asc" ? "desc" : "asc");
+      return;
+    }
+    setProjectSort(nextSort);
+    setProjectSortDirection(nextSort === "name" ? "asc" : "desc");
+  };
 
   return (
     <Box
@@ -409,10 +447,10 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
       {/* ── Sidebar ── */}
       <Box
         style={{
-          width: 220,
+          width: 276,
           flexShrink: 0,
-          background: "#131316",
-          borderRight: "1px solid #1f1f23",
+          background: "linear-gradient(180deg, #11141b 0%, #0f1218 100%)",
+          borderRight: "1px solid #1c212b",
           display: "flex",
           flexDirection: "column",
         }}
@@ -422,7 +460,7 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
 
         {/* App identity */}
         <Box px={16} pb={24}>
-          <Group justify="space-between" align="flex-end" wrap="nowrap" gap={8}>
+          <Group justify="center" align="flex-end" wrap="nowrap" gap={8}>
             <Box
               component="img"
               src={sidebarTitle}
@@ -435,55 +473,33 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
                 minWidth: 0,
               }}
             />
-            <Text size="xs" c="#52525b" lh={1.2} mb={2} style={{ flexShrink: 0 }}>
+          </Group>
+          <Box style={{ display: "flex", justifyContent: "center", marginTop: 4 }}>
+            <Text size="xs" c="#52525b" lh={1.2} style={{ flexShrink: 0 }}>
               0.1.0
             </Text>
-          </Group>
+          </Box>
         </Box>
 
         {/* Nav */}
         <Stack gap={1} px={8} style={{ flex: 1 }}>
           <NavButton active={activeNav === "projects"} onClick={() => setActiveNav("projects")}>
+            <FolderKanban size={14} strokeWidth={1.8} />
             Projects
           </NavButton>
-          <NavButton active={activeNav === "favorites"} onClick={() => setActiveNav("favorites")}>
-            Favorites
-          </NavButton>
           <NavButton active={activeNav === "usage"} onClick={() => setActiveNav("usage")}>
+            <BarChart3 size={14} strokeWidth={1.8} />
             Usage
           </NavButton>
-        </Stack>
-
-        {/* Settings */}
-        <Box px={14} pb={18}>
-          <UnstyledButton
+          <NavButton active={activeNav === "settings"}
             onClick={() => {
               setActiveNav("settings");
               setSettingsTab("general");
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 8,
-              padding: "8px 12px",
-              borderRadius: 6,
-              color: "#52525b",
-              width: "fit-content",
-              margin: "0 auto",
-              transition: "color 180ms ease, background 180ms ease",
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLElement).style.color = "#a1a1aa";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLElement).style.color = "#52525b";
-            }}
-          >
-            <SettingsIcon />
-            <Text size="sm" inherit>Settings</Text>
-          </UnstyledButton>
-        </Box>
+            }}>
+            <Cog size={14} strokeWidth={1.8} />
+            Settings
+          </NavButton>
+        </Stack>
       </Box>
 
       {/* ── Main content ── */}
@@ -542,25 +558,6 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
             </Box>
 
             <Box style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-              <UnstyledButton
-                style={{
-                  height: 32,
-                  padding: "0 12px",
-                  borderRadius: 10,
-                  border: "1px solid #2a2f3d",
-                  background: "linear-gradient(180deg, #171922 0%, #12141b 100%)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 8,
-                  color: "#8b90a3",
-                  fontSize: 12,
-                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
-                }}
-              >
-                <Text size="xs" inherit>Sort: Recent</Text>
-                <ChevronDown size={12} strokeWidth={2} />
-              </UnstyledButton>
-
               <Button
                 size="xs"
                 onClick={async () => {
@@ -715,7 +712,11 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
 
                 <Box>
                   <SectionLabel title={activeNav === "favorites" ? "Favorite Projects" : "All Projects"} />
-                  <ProjectTableHeader />
+                  <ProjectTableHeader
+                    sort={projectSort}
+                    direction={projectSortDirection}
+                    onSortChange={handleProjectSortChange}
+                  />
                   <Box style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
                     {tableProjects.map((workspace) => (
                       <ProjectTableRow
@@ -1648,7 +1649,7 @@ function ProjectPinnedCard({
         <ProjectBadgeAvatar workspace={workspace} faviconDataUrl={faviconDataUrl} />
         <FavoriteButton isFavorite={isFavorite} onClick={onToggleFavorite} />
       </Box>
-      <Text size="lg" fw={600} c="#e7e9f2" mt={14} truncate>
+      <Text size="sm" fw={600} c="#e7e9f2" mt={14} truncate>
         {workspace.display_name}
       </Text>
       <Tooltip label={workspace.decoded_path} withArrow openDelay={500}>
@@ -1668,11 +1669,11 @@ function ProjectPinnedCard({
             background: "#171c24",
           }}
         >
-          <Text size="xs" c="#99a4bb">
+          <Text size="10px" c="#99a4bb">
             {sessionCount} {sessionCount === 1 ? "session" : "sessions"}
           </Text>
         </Box>
-        <Text size="xs" c={workspace.path_exists ? "#66758f" : "#7f1d1d"}>
+        <Text size="10px" c={workspace.path_exists ? "#66758f" : "#7f1d1d"}>
           {workspace.path_exists ? projectRelativeTime(latestSession?.modified_at) : "not found"}
         </Text>
       </Box>
@@ -1680,22 +1681,95 @@ function ProjectPinnedCard({
   );
 }
 
-function ProjectTableHeader() {
+function ProjectTableHeader({
+  sort,
+  direction,
+  onSortChange,
+}: {
+  sort: "recent" | "name" | "sessions";
+  direction: "asc" | "desc";
+  onSortChange: (sort: "recent" | "name" | "sessions") => void;
+}) {
   return (
     <Box
       style={{
         display: "grid",
         gridTemplateColumns: "minmax(0, 1fr) 180px 110px 56px",
         gap: 12,
-        padding: "0 14px 10px",
+        alignItems: "center",
+        minHeight: 30,
+        padding: "0 14px 6px",
         borderBottom: "1px solid #1b2230",
       }}
     >
-      <Text size="xs" fw={700} tt="uppercase" c="#5f6b85" style={{ letterSpacing: 1.1 }}>Name</Text>
-      <Text size="xs" fw={700} tt="uppercase" c="#5f6b85" style={{ letterSpacing: 1.1 }}>Sessions</Text>
-      <Text size="xs" fw={700} tt="uppercase" c="#5f6b85" style={{ letterSpacing: 1.1 }}>Last Active</Text>
-      <Text size="xs" fw={700} tt="uppercase" c="#5f6b85" style={{ letterSpacing: 1.1, textAlign: "center" }}>Fav</Text>
+      <HeaderSortButton
+        label="Name"
+        active={sort === "name"}
+        direction={sort === "name" ? direction : "desc"}
+        onClick={() => onSortChange("name")}
+      />
+      <HeaderSortButton
+        label="Sessions"
+        active={sort === "sessions"}
+        direction={sort === "sessions" ? direction : "desc"}
+        onClick={() => onSortChange("sessions")}
+      />
+      <HeaderSortButton
+        label="Last Active"
+        active={sort === "recent"}
+        direction={sort === "recent" ? direction : "desc"}
+        onClick={() => onSortChange("recent")}
+      />
+      <Text
+        fw={600}
+        c="#5f6b85"
+        style={{ textAlign: "center", whiteSpace: "nowrap", fontSize: 14, lineHeight: "14px" }}
+      >
+        Fav
+      </Text>
     </Box>
+  );
+}
+
+function HeaderSortButton({
+  label,
+  active,
+  direction,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  direction: "asc" | "desc";
+  onClick: () => void;
+}) {
+  return (
+    <UnstyledButton
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 2,
+        color: active ? "#c8d0dd" : "#5f6b85",
+        whiteSpace: "nowrap",
+        lineHeight: 1,
+      }}
+    >
+      <Text
+        fw={600}
+        inherit
+        style={{ whiteSpace: "nowrap", fontSize: 14, lineHeight: "14px" }}
+      >
+        {label}
+      </Text>
+      <ChevronDown
+        size={8}
+        strokeWidth={2}
+        style={{
+          transform: active && direction === "asc" ? "rotate(180deg)" : "none",
+          opacity: active ? 0.8 : 0.45,
+        }}
+      />
+    </UnstyledButton>
   );
 }
 
@@ -1745,7 +1819,7 @@ function ProjectTableRow({
       <Box style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
         <ProjectBadgeAvatar workspace={workspace} faviconDataUrl={faviconDataUrl} />
         <Box style={{ minWidth: 0 }}>
-          <Text size="sm" fw={600} c="#e7e9f2" truncate>
+          <Text size="xs" fw={600} c="#e7e9f2" truncate>
             {workspace.display_name}
           </Text>
           <Tooltip label={workspace.decoded_path} withArrow openDelay={500}>
@@ -1776,12 +1850,12 @@ function ProjectTableRow({
             }}
           />
         </Box>
-        <Text size="sm" c="#98a3b8">
+        <Text size="xs" c="#98a3b8">
           {sessionCount} {sessionCount === 1 ? "session" : "sessions"}
         </Text>
       </Box>
 
-      <Text size="sm" c={workspace.path_exists ? "#66758f" : "#7f1d1d"}>
+      <Text size="xs" c={workspace.path_exists ? "#66758f" : "#7f1d1d"}>
         {workspace.path_exists ? projectRelativeTime(latestSession?.modified_at) : "not found"}
       </Text>
 
@@ -1812,6 +1886,9 @@ function NavButton({
       onMouseLeave={() => setHovered(false)}
       style={{
         width: "100%",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
         padding: "7px 12px",
         borderRadius: 0,
         fontSize: 13,
