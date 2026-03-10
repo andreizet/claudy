@@ -1378,17 +1378,24 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
             onClick={handleStartNewSession}
             style={{
               width: "100%",
-              height: 32,
-              borderRadius: 8,
-              border: "1px solid transparent",
-              background: "#f4f4f5",
+              height: 34,
+              borderRadius: 10,
+              border: "1px solid #e5be48",
+              background: "#f3c63b",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               gap: 8,
               color: "#0c0c0f",
               fontSize: 12,
-              fontWeight: 500,
+              fontWeight: 600,
+              boxShadow: "0 8px 24px rgba(243,198,59,0.16)",
+            }}
+            onMouseEnter={(event) => {
+              event.currentTarget.style.background = "#f7d14e";
+            }}
+            onMouseLeave={(event) => {
+              event.currentTarget.style.background = "#f3c63b";
             }}
           >
             <Plus size={12} strokeWidth={2.2} />
@@ -1404,6 +1411,8 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
         {/* Messages */}
         {loadingMessages ? (
           <MessagesSkeleton />
+        ) : !activeSession && initializingNewSession ? (
+          <ConfiguringSessionState />
         ) : !activeSession && !streaming && !pendingUserMessage ? (
           <EmptyMessages />
         ) : (
@@ -2250,6 +2259,44 @@ function EmptyMessages() {
   return (
     <Box style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
       <Text size="sm" c="#3f3f46">Select a session to view the conversation</Text>
+    </Box>
+  );
+}
+
+function ConfiguringSessionState() {
+  return (
+    <Box style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <Box
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 12,
+          padding: "22px 26px",
+          borderRadius: 14,
+          border: "1px solid #23232a",
+          background: "#121217",
+        }}
+      >
+        <Box
+          style={{
+            width: 20,
+            height: 20,
+            borderRadius: "50%",
+            border: "2px solid #34343d",
+            borderTopColor: "#f3c63b",
+            animation: "claudyConfiguringSpin 0.9s linear infinite",
+          }}
+        />
+        <Text size="sm" fw={600} c="#e4e4e7">Configuring Claude Code</Text>
+        <Text size="xs" c="#71717a">Preparing permissions and session settings for this folder.</Text>
+        <style>{`
+          @keyframes claudyConfiguringSpin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+        `}</style>
+      </Box>
     </Box>
   );
 }

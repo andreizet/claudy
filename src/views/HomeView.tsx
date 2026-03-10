@@ -1,8 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
-import { Box, Text, TextInput, Button, Group, Stack, ScrollArea, UnstyledButton, Skeleton, Switch } from "@mantine/core";
-import { ChevronDown, Cog, Plus, Search } from "lucide-react";
+import { Box, Text, TextInput, Button, Group, Stack, ScrollArea, UnstyledButton, Skeleton, Switch, Tooltip } from "@mantine/core";
+import { ChevronDown, Cog, Plus, Search, Star } from "lucide-react";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "../types";
-import ProjectListItem from "../components/ProjectListItem";
 import sidebarTitle from "../assets/sidebar-title.svg";
 import { md5 } from "../shared/md5";
 import { invoke } from "@tauri-apps/api/core";
@@ -378,6 +377,19 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
     activeNav === "favorites"
       ? filtered.filter((w) => favorites.has(w.encoded_name))
       : filtered;
+  const sortedListed = useMemo(
+    () => [...listed].sort((a, b) => {
+      const aLast = Number(a.sessions[0]?.modified_at ?? 0);
+      const bLast = Number(b.sessions[0]?.modified_at ?? 0);
+      return bLast - aLast || a.display_name.localeCompare(b.display_name);
+    }),
+    [listed]
+  );
+  const pinnedProjects = useMemo(
+    () => sortedListed.filter((workspace) => favorites.has(workspace.encoded_name)),
+    [favorites, sortedListed]
+  );
+  const tableProjects = activeNav === "projects" ? sortedListed : pinnedProjects;
   const email = accountInfo?.email?.trim().toLowerCase() ?? "";
   const avatarUrl = email
     ? `https://www.gravatar.com/avatar/${md5(email)}?s=80&d=identicon`
@@ -480,9 +492,9 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
         {/* Top bar */}
         {activeNav !== "usage" && activeNav !== "settings" ? (
           <Box
-            px={20}
+            px={22}
             style={{
-              height: 52,
+              height: 56,
               display: "flex",
               alignItems: "center",
               gap: 16,
@@ -490,10 +502,28 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
               flexShrink: 0,
             }}
           >
-            <Group gap={6} style={{ flex: 1, maxWidth: 300 }}>
+            <Text size="lg" fw={600} c="#f4f4f5" style={{ flexShrink: 0, minWidth: 0 }}>
+              {activeNav === "favorites" ? "Favorites" : "Projects"}
+            </Text>
+
+            <Box
+              style={{
+                width: 240,
+                maxWidth: "100%",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "0 12px",
+                height: 36,
+                borderRadius: 9,
+                border: "1px solid #2a2f3d",
+                background: "linear-gradient(180deg, #171922 0%, #12141b 100%)",
+                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
+              }}
+            >
               <SearchIcon />
               <TextInput
-                placeholder="Search projects"
+                placeholder="Search projects..."
                 value={search}
                 onChange={(e) => setSearch(e.currentTarget.value)}
                 variant="unstyled"
@@ -509,37 +539,59 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
                   },
                 }}
               />
-            </Group>
+            </Box>
 
-            <Button
-              ml="auto"
-              size="xs"
-              onClick={async () => {
-                const selected = await open({
-                  directory: true,
-                  multiple: false,
-                  title: "Choose project folder",
-                });
-              if (typeof selected === "string" && selected) {
-                  onCreateSession(selected);
-                }
-              }}
-              leftSection={<Plus size={12} strokeWidth={2.5} />}
-              styles={{
-                root: {
-                  background: "#f4f4f5",
-                  color: "#0c0c0f",
-                  fontSize: 12,
-                  fontWeight: 500,
-                  height: 28,
+            <Box style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+              <UnstyledButton
+                style={{
+                  height: 32,
                   padding: "0 12px",
-                  border: "none",
-                  "&:hover": { background: "#e4e4e7" },
-                },
-              }}
-            >
-              New Session
-            </Button>
+                  borderRadius: 10,
+                  border: "1px solid #2a2f3d",
+                  background: "linear-gradient(180deg, #171922 0%, #12141b 100%)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  color: "#8b90a3",
+                  fontSize: 12,
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
+                }}
+              >
+                <Text size="xs" inherit>Sort: Recent</Text>
+                <ChevronDown size={12} strokeWidth={2} />
+              </UnstyledButton>
+
+              <Button
+                size="xs"
+                onClick={async () => {
+                  const selected = await open({
+                    directory: true,
+                    multiple: false,
+                    title: "Choose project folder",
+                  });
+                  if (typeof selected === "string" && selected) {
+                    onCreateSession(selected);
+                  }
+                }}
+                leftSection={<Plus size={12} strokeWidth={2.5} />}
+                styles={{
+                  root: {
+                    background: "#f3c63b",
+                    color: "#0c0c0f",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    height: 34,
+                    padding: "0 16px",
+                    border: "1px solid #e5be48",
+                    borderRadius: 10,
+                    boxShadow: "0 8px 24px rgba(243,198,59,0.16)",
+                    "&:hover": { background: "#f7d14e" },
+                  },
+                }}
+              >
+                New Session
+              </Button>
+            </Box>
           </Box>
         ) : (
           <Box
@@ -626,30 +678,65 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
           <ScrollArea style={{ flex: 1 }}>
             {isLoading ? (
               <LoadingSkeleton />
-            ) : listed.length === 0 ? (
+            ) : sortedListed.length === 0 ? (
               <EmptyState activeNav={activeNav} hasSearch={!!search} />
             ) : (
-              <Box>
-                {listed.map((w) => (
-                  <ProjectListItem
-                    key={w.encoded_name}
-                    workspace={w}
-                    faviconDataUrl={favicons[w.encoded_name] ?? null}
-                    isFavorite={favorites.has(w.encoded_name)}
-                    onToggleFavorite={() =>
-                      setFavorites((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(w.encoded_name)) {
-                          next.delete(w.encoded_name);
-                        } else {
-                          next.add(w.encoded_name);
+              <Box px={22} py={20} style={{ minHeight: "100%" }}>
+                {activeNav === "projects" && pinnedProjects.length > 0 ? (
+                  <Box mb={34}>
+                    <SectionLabel title="Pinned" />
+                    <Box
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(220px, 240px))",
+                        gap: 12,
+                      }}
+                    >
+                      {pinnedProjects.map((workspace) => (
+                        <ProjectPinnedCard
+                          key={`pinned-${workspace.encoded_name}`}
+                          workspace={workspace}
+                          faviconDataUrl={favicons[workspace.encoded_name] ?? null}
+                          isFavorite={favorites.has(workspace.encoded_name)}
+                          onToggleFavorite={() =>
+                            setFavorites((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(workspace.encoded_name)) next.delete(workspace.encoded_name);
+                              else next.add(workspace.encoded_name);
+                              return next;
+                            })
+                          }
+                          onClick={() => workspace.path_exists && onOpenWorkspace(workspace)}
+                        />
+                      ))}
+                    </Box>
+                  </Box>
+                ) : null}
+
+                <Box>
+                  <SectionLabel title={activeNav === "favorites" ? "Favorite Projects" : "All Projects"} />
+                  <ProjectTableHeader />
+                  <Box style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+                    {tableProjects.map((workspace) => (
+                      <ProjectTableRow
+                        key={workspace.encoded_name}
+                        workspace={workspace}
+                        faviconDataUrl={favicons[workspace.encoded_name] ?? null}
+                        isFavorite={favorites.has(workspace.encoded_name)}
+                        maxSessions={Math.max(...tableProjects.map((item) => item.sessions.length), 1)}
+                        onToggleFavorite={() =>
+                          setFavorites((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(workspace.encoded_name)) next.delete(workspace.encoded_name);
+                            else next.add(workspace.encoded_name);
+                            return next;
+                          })
                         }
-                        return next;
-                      })
-                    }
-                    onClick={() => w.path_exists && onOpenWorkspace(w)}
-                  />
-                ))}
+                        onClick={() => workspace.path_exists && onOpenWorkspace(workspace)}
+                      />
+                    ))}
+                  </Box>
+                </Box>
               </Box>
             )}
           </ScrollArea>
@@ -1372,7 +1459,335 @@ function EmptySettingsPanel({ label }: { label: string }) {
         justifyContent: "center",
       }}
     >
-      <Text size="sm" c="#52525b">{label} will live here.</Text>
+      <Text size="sm" c="#52525b">{label} coming soon.</Text>
+    </Box>
+  );
+}
+
+const PROJECT_ACCENT_COLORS = [
+  "#2a3f5c",
+  "#1e4d3a",
+  "#4d2a2a",
+  "#352a4d",
+  "#4d3b1e",
+  "#1e3d4d",
+  "#2a2a4d",
+  "#4d2a3b",
+];
+
+function projectColorFor(name: string): string {
+  let hash = 0;
+  for (let index = 0; index < name.length; index += 1) {
+    hash = name.charCodeAt(index) + ((hash << 5) - hash);
+  }
+  return PROJECT_ACCENT_COLORS[Math.abs(hash) % PROJECT_ACCENT_COLORS.length];
+}
+
+function projectInitials(name: string): string {
+  const words = name.split(/[-_.\s]+/).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  const camelWords = name.replace(/([A-Z])/g, " $1").trim().split(/\s+/);
+  if (camelWords.length >= 2) return (camelWords[0][0] + camelWords[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+
+function shortenProjectPath(fullPath: string): string {
+  const home = fullPath.match(/^\/(?:Users|home)\/[^/]+/)?.[0];
+  if (home) return "~" + fullPath.slice(home.length);
+  const windowsHome = fullPath.match(/^[A-Za-z]:\\Users\\[^\\]+/i)?.[0];
+  if (windowsHome) return "~" + fullPath.slice(windowsHome.length).replace(/\\/g, "/");
+  return fullPath;
+}
+
+function projectRelativeTime(secs: string | undefined): string {
+  if (!secs) return "";
+  const diff = Date.now() - Number(secs) * 1000;
+  const minutes = Math.floor(diff / 60_000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${days}d ago`;
+  if (hours > 0) return `${hours}h ago`;
+  if (minutes > 0) return `${minutes}m ago`;
+  return "just now";
+}
+
+function SectionLabel({ title }: { title: string }) {
+  return (
+    <Box
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        marginBottom: 18,
+      }}
+    >
+      <Text size="xs" fw={700} tt="uppercase" c="#5f6b85" style={{ letterSpacing: 1.3 }}>
+        {title}
+      </Text>
+      <Box style={{ flex: 1, height: 1, background: "#1b2230" }} />
+    </Box>
+  );
+}
+
+function ProjectBadgeAvatar({
+  workspace,
+  faviconDataUrl,
+  size = 38,
+}: {
+  workspace: DiscoveredWorkspace;
+  faviconDataUrl: string | null;
+  size?: number;
+}) {
+  const color = projectColorFor(workspace.display_name);
+  const initials = projectInitials(workspace.display_name);
+
+  return (
+    <Box
+      style={{
+        width: size,
+        height: size,
+        borderRadius: Math.round(size * 0.28),
+        background: workspace.path_exists ? color : "#1e1e24",
+        border: "1px solid rgba(255,255,255,0.04)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "rgba(255,255,255,0.9)",
+        fontSize: size >= 36 ? (initials.length === 1 ? 16 : 12) : 12,
+        fontWeight: 700,
+        letterSpacing: 0.3,
+        flexShrink: 0,
+      }}
+    >
+      {faviconDataUrl ? (
+        <Box
+          component="img"
+          src={faviconDataUrl}
+          alt={`${workspace.display_name} favicon`}
+          style={{
+            width: "70%",
+            height: "70%",
+            objectFit: "contain",
+            borderRadius: 6,
+          }}
+        />
+      ) : (
+        initials
+      )}
+    </Box>
+  );
+}
+
+function FavoriteButton({
+  isFavorite,
+  onClick,
+}: {
+  isFavorite: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Tooltip label={isFavorite ? "Remove from favorites" : "Add to favorites"} withArrow>
+      <Box
+        component="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+        }}
+        aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
+        style={{
+          width: 22,
+          height: 22,
+          border: "none",
+          background: "transparent",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: isFavorite ? "#f3c63b" : "#44516b",
+          cursor: "pointer",
+          padding: 0,
+          flexShrink: 0,
+        }}
+      >
+        <Star size={14} strokeWidth={1.8} fill={isFavorite ? "currentColor" : "none"} />
+      </Box>
+    </Tooltip>
+  );
+}
+
+function ProjectPinnedCard({
+  workspace,
+  faviconDataUrl,
+  isFavorite,
+  onToggleFavorite,
+  onClick,
+}: {
+  workspace: DiscoveredWorkspace;
+  faviconDataUrl: string | null;
+  isFavorite: boolean;
+  onToggleFavorite: () => void;
+  onClick: () => void;
+}) {
+  const latestSession = workspace.sessions[0];
+  const sessionCount = workspace.sessions.length;
+
+  return (
+    <Box
+      onClick={onClick}
+      style={{
+        minHeight: 146,
+        padding: 16,
+        borderRadius: 14,
+        border: "1px solid #2a3243",
+        background: "linear-gradient(180deg, #1a1d28 0%, #171a22 100%)",
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
+        cursor: workspace.path_exists ? "pointer" : "default",
+        opacity: workspace.path_exists ? 1 : 0.45,
+      }}
+    >
+      <Box style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+        <ProjectBadgeAvatar workspace={workspace} faviconDataUrl={faviconDataUrl} />
+        <FavoriteButton isFavorite={isFavorite} onClick={onToggleFavorite} />
+      </Box>
+      <Text size="lg" fw={600} c="#e7e9f2" mt={14} truncate>
+        {workspace.display_name}
+      </Text>
+      <Tooltip label={workspace.decoded_path} withArrow openDelay={500}>
+        <Text size="xs" c="#66758f" mt={4} truncate>
+          {shortenProjectPath(workspace.decoded_path)}
+        </Text>
+      </Tooltip>
+      <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 18 }}>
+        <Box
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            height: 22,
+            padding: "0 10px",
+            borderRadius: 999,
+            border: "1px solid #2a3243",
+            background: "#171c24",
+          }}
+        >
+          <Text size="xs" c="#99a4bb">
+            {sessionCount} {sessionCount === 1 ? "session" : "sessions"}
+          </Text>
+        </Box>
+        <Text size="xs" c={workspace.path_exists ? "#66758f" : "#7f1d1d"}>
+          {workspace.path_exists ? projectRelativeTime(latestSession?.modified_at) : "not found"}
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+function ProjectTableHeader() {
+  return (
+    <Box
+      style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr) 180px 110px 56px",
+        gap: 12,
+        padding: "0 14px 10px",
+        borderBottom: "1px solid #1b2230",
+      }}
+    >
+      <Text size="xs" fw={700} tt="uppercase" c="#5f6b85" style={{ letterSpacing: 1.1 }}>Name</Text>
+      <Text size="xs" fw={700} tt="uppercase" c="#5f6b85" style={{ letterSpacing: 1.1 }}>Sessions</Text>
+      <Text size="xs" fw={700} tt="uppercase" c="#5f6b85" style={{ letterSpacing: 1.1 }}>Last Active</Text>
+      <Text size="xs" fw={700} tt="uppercase" c="#5f6b85" style={{ letterSpacing: 1.1, textAlign: "center" }}>Fav</Text>
+    </Box>
+  );
+}
+
+function ProjectTableRow({
+  workspace,
+  faviconDataUrl,
+  isFavorite,
+  maxSessions,
+  onToggleFavorite,
+  onClick,
+}: {
+  workspace: DiscoveredWorkspace;
+  faviconDataUrl: string | null;
+  isFavorite: boolean;
+  maxSessions: number;
+  onToggleFavorite: () => void;
+  onClick: () => void;
+}) {
+  const latestSession = workspace.sessions[0];
+  const sessionCount = workspace.sessions.length;
+  const progress = maxSessions > 0 ? Math.max(0.08, sessionCount / maxSessions) : 0;
+
+  return (
+    <Box
+      onClick={onClick}
+      style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr) 180px 110px 56px",
+        gap: 12,
+        alignItems: "center",
+        padding: "14px",
+        borderRadius: 12,
+        cursor: workspace.path_exists ? "pointer" : "default",
+        opacity: workspace.path_exists ? 1 : 0.45,
+        transition: "background 180ms ease, border-color 180ms ease",
+        border: "1px solid transparent",
+      }}
+      onMouseEnter={(event) => {
+        event.currentTarget.style.background = "#171b25";
+        event.currentTarget.style.borderColor = "#2a3243";
+      }}
+      onMouseLeave={(event) => {
+        event.currentTarget.style.background = "transparent";
+        event.currentTarget.style.borderColor = "transparent";
+      }}
+    >
+      <Box style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
+        <ProjectBadgeAvatar workspace={workspace} faviconDataUrl={faviconDataUrl} />
+        <Box style={{ minWidth: 0 }}>
+          <Text size="sm" fw={600} c="#e7e9f2" truncate>
+            {workspace.display_name}
+          </Text>
+          <Tooltip label={workspace.decoded_path} withArrow openDelay={500}>
+            <Text size="xs" c="#66758f" truncate>
+              {shortenProjectPath(workspace.decoded_path)}
+            </Text>
+          </Tooltip>
+        </Box>
+      </Box>
+
+      <Box style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <Box
+          style={{
+            width: 56,
+            height: 4,
+            borderRadius: 999,
+            background: "#232a36",
+            overflow: "hidden",
+            flexShrink: 0,
+          }}
+        >
+          <Box
+            style={{
+              width: `${progress * 100}%`,
+              height: "100%",
+              borderRadius: 999,
+              background: sessionCount > 0 ? "#b99a3d" : "#394352",
+            }}
+          />
+        </Box>
+        <Text size="sm" c="#98a3b8">
+          {sessionCount} {sessionCount === 1 ? "session" : "sessions"}
+        </Text>
+      </Box>
+
+      <Text size="sm" c={workspace.path_exists ? "#66758f" : "#7f1d1d"}>
+        {workspace.path_exists ? projectRelativeTime(latestSession?.modified_at) : "not found"}
+      </Text>
+
+      <Box style={{ display: "flex", justifyContent: "center" }}>
+        <FavoriteButton isFavorite={isFavorite} onClick={onToggleFavorite} />
+      </Box>
     </Box>
   );
 }

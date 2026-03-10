@@ -117,6 +117,7 @@ describe("ChatView core message flow", () => {
 
     renderChat(workspace);
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.getByText("Configuring Claude Code")).toBeInTheDocument();
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_claude_session_init", expect.any(Object)));
     expect(await screen.findByRole("button", { name: "Save" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
