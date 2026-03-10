@@ -38,20 +38,27 @@ vi.mock("@xterm/addon-fit", () => ({
 vi.mock("../components/chat/MessageList", () => ({
   default: ({
     messages,
+    streamMessages,
     pendingUserText,
     showGenerating,
-    streamText,
+    streamBlocks,
   }: {
     messages: Array<{ message?: { content?: string } }>;
+    streamMessages?: Array<{ message?: { content?: Array<{ type: string; text?: string; name?: string }> } }>;
     pendingUserText?: string;
     showGenerating?: boolean;
-    streamText?: string;
+    streamBlocks?: Array<{ type: string; text?: string; name?: string; thinking?: string }>;
   }) => (
     <div data-testid="message-list">
       <div>message-count:{messages.length}</div>
+      <div>stream-message-count:{(streamMessages ?? []).length}</div>
       <div>pending-user:{pendingUserText ?? ""}</div>
       <div>show-generating:{String(!!showGenerating)}</div>
-      <div>stream-text:{streamText ?? ""}</div>
+      <div>stream-blocks:{(streamBlocks ?? []).map((block) => {
+        if (block.type === "text") return block.text ?? "";
+        if (block.type === "thinking") return `thinking:${block.thinking ?? ""}`;
+        return `${block.type}:${block.name ?? ""}`;
+      }).join("|")}</div>
     </div>
   ),
 }));
@@ -295,6 +302,14 @@ describe("ChatView core message flow", () => {
     });
     invokeMock.mockImplementation((command: string) => {
       switch (command) {
+        case "get_claude_session_init":
+          return Promise.resolve({
+            session_id: mockWorkspace.sessions[0].id,
+            cwd: mockWorkspace.decoded_path,
+            model: "claude-sonnet-4-6",
+            tools: ["Read", "Edit", "Bash"],
+            mcp_servers: [],
+          });
         case "get_session_messages":
           return Promise.resolve([]);
         case "get_workspace_files":
@@ -348,6 +363,206 @@ describe("ChatView core message flow", () => {
         message: "continue this",
         allowedTools: ["Read", "Bash", "mcp__claude_ai_MCP_AWR__GetKeywordsDifficulty"],
       }));
+    });
+  });
+
+  it("renders incremental stream deltas while a response is in flight", async () => {
+    const listeners = new Map<string, (payload: { payload: string }) => void>();
+    listenMock.mockImplementation((event: string, callback: (payload: { payload: string }) => void) => {
+      listeners.set(event, callback);
+      return Promise.resolve(() => listeners.delete(event));
+    });
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_session_messages":
+          return Promise.resolve([]);
+        case "get_workspace_files":
+          return Promise.resolve([]);
+        case "get_workspace_slash_commands":
+          return Promise.resolve([]);
+        case "get_workspace_favicon":
+          return Promise.resolve(null);
+        case "send_message":
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    renderChat(mockWorkspace);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_session_messages", expect.any(Object)));
+
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "stream this", selectionStart: 11 } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    listeners.get("claude-stream")?.({
+      payload: JSON.stringify({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          delta: {
+            type: "text_delta",
+            text: "Hello",
+          },
+        },
+      }),
+    });
+    listeners.get("claude-stream")?.({
+      payload: JSON.stringify({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          delta: {
+            type: "text_delta",
+            text: " world",
+          },
+        },
+      }),
+    });
+
+    expect(await screen.findByText("stream-blocks:Hello world")).toBeInTheDocument();
+  });
+
+  it("keeps earlier streamed tool steps visible when a later assistant message starts", async () => {
+    const listeners = new Map<string, (payload: { payload: string }) => void>();
+    listenMock.mockImplementation((event: string, callback: (payload: { payload: string }) => void) => {
+      listeners.set(event, callback);
+      return Promise.resolve(() => listeners.delete(event));
+    });
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_session_messages":
+          return Promise.resolve([]);
+        case "get_workspace_files":
+          return Promise.resolve([]);
+        case "get_workspace_slash_commands":
+          return Promise.resolve([]);
+        case "get_workspace_favicon":
+          return Promise.resolve(null);
+        case "send_message":
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    renderChat(mockWorkspace);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_session_messages", expect.any(Object)));
+
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "use a tool", selectionStart: 10 } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    listeners.get("claude-stream")?.({
+      payload: JSON.stringify({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-1",
+            name: "Read",
+            input: {
+              file_path: "src/App.tsx",
+            },
+          },
+        },
+      }),
+    });
+
+    expect(await screen.findByText("stream-blocks:tool_use:Read")).toBeInTheDocument();
+
+    listeners.get("claude-stream")?.({
+      payload: JSON.stringify({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+        },
+      }),
+    });
+
+    listeners.get("claude-stream")?.({
+      payload: JSON.stringify({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-2",
+            name: "Bash",
+            input: {
+              command: "npm test",
+            },
+          },
+        },
+      }),
+    });
+
+    expect(await screen.findByText("stream-message-count:1")).toBeInTheDocument();
+    expect(await screen.findByText("stream-blocks:tool_use:Bash")).toBeInTheDocument();
+  });
+
+  it("shows thinking only while the current block is active", async () => {
+    const listeners = new Map<string, (payload: { payload: string }) => void>();
+    listenMock.mockImplementation((event: string, callback: (payload: { payload: string }) => void) => {
+      listeners.set(event, callback);
+      return Promise.resolve(() => listeners.delete(event));
+    });
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_session_messages":
+          return Promise.resolve([]);
+        case "get_workspace_files":
+          return Promise.resolve([]);
+        case "get_workspace_slash_commands":
+          return Promise.resolve([]);
+        case "get_workspace_favicon":
+          return Promise.resolve(null);
+        case "send_message":
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    renderChat(mockWorkspace);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_session_messages", expect.any(Object)));
+
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "think first", selectionStart: 11 } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    listeners.get("claude-stream")?.({
+      payload: JSON.stringify({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "thinking_delta",
+            thinking: "Inspecting context",
+          },
+        },
+      }),
+    });
+
+    expect(await screen.findByText("stream-blocks:thinking:Inspecting context")).toBeInTheDocument();
+
+    listeners.get("claude-stream")?.({
+      payload: JSON.stringify({
+        type: "stream_event",
+        event: {
+          type: "content_block_stop",
+          index: 0,
+        },
+      }),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("stream-blocks:")).toBeInTheDocument();
     });
   });
 });

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, ScrollArea, UnstyledButton, Group, Skeleton, Tooltip } from "@mantine/core";
 import {
   ChevronDown,
@@ -18,7 +18,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { ClaudeAccountInfo, DiscoveredWorkspace, DiscoveredSession, JsonlRecord } from "../types";
+import { ClaudeAccountInfo, ContentBlock, ContentBlockToolUse, DiscoveredWorkspace, DiscoveredSession, JsonlRecord } from "../types";
 import MessageList from "../components/chat/MessageList";
 import { md5 } from "../shared/md5";
 import {
@@ -45,27 +45,27 @@ const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 const PINNED_SESSION_STORAGE_KEY = "claudy.pinnedSessions";
 const SESSION_NAME_STORAGE_KEY = "claudy.sessionNames";
 const BUILTIN_SLASH_COMMANDS: SlashCommandOption[] = [
-  { name: "add-dir", description: "Add additional working directories.", source: "builtin" },
-  { name: "agents", description: "Manage custom AI subagents.", source: "builtin" },
-  { name: "bug", description: "Report bugs to Anthropic.", source: "builtin" },
-  { name: "clear", description: "Clear conversation history.", source: "builtin" },
-  { name: "compact", description: "Compact conversation with optional focus instructions.", argument_hint: "[instructions]", source: "builtin" },
-  { name: "config", description: "View or modify Claude Code configuration.", source: "builtin" },
-  { name: "cost", description: "Show token usage statistics.", source: "builtin" },
-  { name: "doctor", description: "Check Claude Code installation health.", source: "builtin" },
-  { name: "help", description: "Show usage help.", source: "builtin" },
-  { name: "init", description: "Initialize project guidance with CLAUDE.md.", source: "builtin" },
-  { name: "login", description: "Switch Anthropic accounts.", source: "builtin" },
-  { name: "logout", description: "Sign out from your Anthropic account.", source: "builtin" },
-  { name: "mcp", description: "Manage MCP server connections and OAuth auth.", source: "builtin" },
-  { name: "memory", description: "Edit CLAUDE.md memory files.", source: "builtin" },
-  { name: "model", description: "Select or change the AI model.", source: "builtin" },
-  { name: "permissions", description: "View or update permissions.", source: "builtin" },
-  { name: "pr_comments", description: "View pull request comments.", source: "builtin" },
-  { name: "review", description: "Run a code review flow.", source: "builtin" },
-  { name: "status", description: "Show session and environment status.", source: "builtin" },
-  { name: "terminal-setup", description: "Install terminal key bindings and shell integration.", source: "builtin" },
-  { name: "vim", description: "Toggle or configure Vim mode.", source: "builtin" },
+  { name: "add-dir", description: "Add additional working directories.", source: "builtin", kind: "command" },
+  { name: "agents", description: "Manage custom AI subagents.", source: "builtin", kind: "command" },
+  { name: "bug", description: "Report bugs to Anthropic.", source: "builtin", kind: "command" },
+  { name: "clear", description: "Clear conversation history.", source: "builtin", kind: "command" },
+  { name: "compact", description: "Compact conversation with optional focus instructions.", argument_hint: "[instructions]", source: "builtin", kind: "command" },
+  { name: "config", description: "View or modify Claude Code configuration.", source: "builtin", kind: "command" },
+  { name: "cost", description: "Show token usage statistics.", source: "builtin", kind: "command" },
+  { name: "doctor", description: "Check Claude Code installation health.", source: "builtin", kind: "command" },
+  { name: "help", description: "Show usage help.", source: "builtin", kind: "command" },
+  { name: "init", description: "Initialize project guidance with CLAUDE.md.", source: "builtin", kind: "command" },
+  { name: "login", description: "Switch Anthropic accounts.", source: "builtin", kind: "command" },
+  { name: "logout", description: "Sign out from your Anthropic account.", source: "builtin", kind: "command" },
+  { name: "mcp", description: "Manage MCP server connections and OAuth auth.", source: "builtin", kind: "command" },
+  { name: "memory", description: "Edit CLAUDE.md memory files.", source: "builtin", kind: "command" },
+  { name: "model", description: "Select or change the AI model.", source: "builtin", kind: "command" },
+  { name: "permissions", description: "View or update permissions.", source: "builtin", kind: "command" },
+  { name: "pr_comments", description: "View pull request comments.", source: "builtin", kind: "command" },
+  { name: "review", description: "Run a code review flow.", source: "builtin", kind: "command" },
+  { name: "status", description: "Show session and environment status.", source: "builtin", kind: "command" },
+  { name: "terminal-setup", description: "Install terminal key bindings and shell integration.", source: "builtin", kind: "command" },
+  { name: "vim", description: "Toggle or configure Vim mode.", source: "builtin", kind: "command" },
 ];
 
 interface SlashCommandOption {
@@ -73,6 +73,7 @@ interface SlashCommandOption {
   description?: string;
   argument_hint?: string;
   source: string;
+  kind: "command" | "skill";
 }
 
 interface InteractiveEventPayload {
@@ -92,6 +93,67 @@ interface ClaudeSessionInit {
   model: string | null;
   tools: string[];
   mcp_servers: unknown;
+}
+
+function ensureStreamTextBlock(blocks: ContentBlock[], index: number): ContentBlock[] {
+  const next = blocks.slice();
+  if (!next[index] || next[index].type !== "text") {
+    next[index] = { type: "text", text: "" };
+  }
+  return next;
+}
+
+function appendStreamTextDelta(blocks: ContentBlock[], index: number, text: string): ContentBlock[] {
+  const next = ensureStreamTextBlock(blocks, index);
+  const block = next[index];
+  if (block.type !== "text") return next;
+  next[index] = { ...block, text: block.text + text };
+  return next;
+}
+
+function appendThinkingDelta(blocks: ContentBlock[], index: number, thinking: string): ContentBlock[] {
+  const next = blocks.slice();
+  const existing = next[index];
+  if (!existing || existing.type !== "thinking") {
+    next[index] = { type: "thinking", thinking };
+    return next;
+  }
+  next[index] = { ...existing, thinking: `${existing.thinking}${thinking}` };
+  return next;
+}
+
+function removeStreamBlock(blocks: ContentBlock[], index: number): ContentBlock[] {
+  const next = blocks.slice();
+  next.splice(index, 1);
+  return next;
+}
+
+function stripThinkingBlocks(blocks: ContentBlock[]): ContentBlock[] {
+  return blocks.filter((block) => block.type !== "thinking");
+}
+
+function updateStreamToolInputDelta(blocks: ContentBlock[], index: number, partialJson: string): ContentBlock[] {
+  const next = blocks.slice();
+  const block = next[index];
+  if (!block || block.type !== "tool_use") return next;
+  try {
+    next[index] = {
+      ...block,
+      input: JSON.parse(partialJson) as Record<string, unknown>,
+    };
+  } catch {
+    return next;
+  }
+  return next;
+}
+
+function mergeStreamBlocks(current: ContentBlock[], incoming: ContentBlock[]): ContentBlock[] {
+  if (incoming.length === 0) return current;
+  const next = current.slice();
+  incoming.forEach((block, index) => {
+    next[index] = block;
+  });
+  return next;
 }
 
 function shortenPath(fullPath: string): string {
@@ -150,7 +212,8 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
   const [model, setModel] = useState("default");
   const [effort, setEffort] = useState("default");
   const [streaming, setStreaming] = useState(false);
-  const [streamText, setStreamText] = useState("");
+  const [streamMessages, setStreamMessages] = useState<JsonlRecord[]>([]);
+  const [streamBlocks, setStreamBlocks] = useState<ContentBlock[]>([]);
   const [projectIcon, setProjectIcon] = useState<string | null>(null);
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
   const [slashCommands, setSlashCommands] = useState<SlashCommandOption[]>([]);
@@ -160,6 +223,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
   const [autocompleteOpen, setAutocompleteOpen] = useState(false);
   const [autocompleteIndex, setAutocompleteIndex] = useState(0);
   const [autocompleteRange, setAutocompleteRange] = useState<{ start: number; end: number } | null>(null);
+  const deferredAutocompleteQuery = useDeferredValue(autocompleteQuery);
   const [interactiveSessionId, setInteractiveSessionId] = useState<string | null>(null);
   const [interactiveVisible, setInteractiveVisible] = useState(false);
   const [interactiveOutput, setInteractiveOutput] = useState("");
@@ -180,6 +244,11 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
   const fitAddonRef = useRef<FitAddon | null>(null);
   const interactiveWrittenLengthRef = useRef(0);
   const pendingSendRef = useRef<PendingSendContext | null>(null);
+  const streamBlocksRef = useRef<ContentBlock[]>([]);
+
+  useEffect(() => {
+    streamBlocksRef.current = streamBlocks;
+  }, [streamBlocks]);
 
   const loadSessionNames = () => {
     try {
@@ -312,7 +381,8 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     setLoadingMessages(false);
     setLoadingSessionId(null);
     setInput("");
-    setStreamText("");
+    setStreamMessages([]);
+    setStreamBlocks([]);
     setStreaming(false);
     setSessionToolState(null);
     setSessionSettingsOpen(false);
@@ -446,6 +516,31 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     void fetchSessionSettings(activeSession.id);
   }, [activeSession, initializingNewSession, loadingSessionSettings, sessionToolState]);
 
+  const fileSuggestions = useMemo(() => {
+    const normalized = deferredAutocompleteQuery.trim().toLowerCase();
+    const pool = workspaceFiles.filter((file) => !selectedFileRefs.includes(file));
+    const ranked = normalized
+      ? pool.filter((file) => file.toLowerCase().includes(normalized))
+      : pool;
+    return ranked.slice(0, 8);
+  }, [deferredAutocompleteQuery, selectedFileRefs, workspaceFiles]);
+
+  const commandSuggestions = useMemo(() => {
+    const normalized = deferredAutocompleteQuery.trim().toLowerCase();
+    const deduped = Array.from(
+      new Map([...BUILTIN_SLASH_COMMANDS, ...slashCommands].map((command) => [command.name, command])).values()
+    );
+    const ranked = normalized
+      ? deduped.filter((command) => (
+          command.name.toLowerCase().includes(normalized)
+          || command.description?.toLowerCase().includes(normalized)
+        ))
+      : deduped;
+    return ranked.slice(0, 8);
+  }, [deferredAutocompleteQuery, slashCommands]);
+
+  const activeSuggestions = autocompleteMode === "command" ? commandSuggestions : fileSuggestions;
+
   useEffect(() => {
     const cachedInventory = loadToolInventoryCache();
     if (!cachedInventory || !activeSession) return;
@@ -508,38 +603,14 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     }).catch(console.error);
   };
 
-  const fileSuggestions = useMemo(() => {
-    const normalized = autocompleteQuery.trim().toLowerCase();
-    const pool = workspaceFiles.filter((file) => !selectedFileRefs.includes(file));
-    const ranked = normalized
-      ? pool.filter((file) => file.toLowerCase().includes(normalized))
-      : pool;
-    return ranked.slice(0, 8);
-  }, [autocompleteQuery, selectedFileRefs, workspaceFiles]);
-
-  const commandSuggestions = useMemo(() => {
-    const normalized = autocompleteQuery.trim().toLowerCase();
-    const deduped = Array.from(
-      new Map([...BUILTIN_SLASH_COMMANDS, ...slashCommands].map((command) => [command.name, command])).values()
-    );
-    const ranked = normalized
-      ? deduped.filter((command) => (
-          command.name.toLowerCase().includes(normalized)
-          || command.description?.toLowerCase().includes(normalized)
-        ))
-      : deduped;
-    return ranked.slice(0, 8);
-  }, [autocompleteQuery, slashCommands]);
-
-  const activeSuggestions = autocompleteMode === "command" ? commandSuggestions : fileSuggestions;
-
   const sendClaudeMessage = (message: string, allowedTools?: string[]) => {
     const persistedPolicy = loadPersistedToolPolicy();
     const effectiveAllowedTools = allowedTools
       ?? sessionToolState?.selectedTools
       ?? persistedPolicy?.selectedTools;
     setStreaming(true);
-    setStreamText("");
+    setStreamMessages([]);
+    setStreamBlocks([]);
     setPendingUserMessage(message);
     pendingSendRef.current = {
       message,
@@ -568,7 +639,8 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     command.catch((e) => {
       console.error(e);
       setStreaming(false);
-      setStreamText("");
+      setStreamMessages([]);
+      setStreamBlocks([]);
       setPendingUserMessage("");
       setCreatingInitialSession(false);
       pendingSendRef.current = null;
@@ -609,7 +681,6 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     setAutocompleteOpen(false);
     setAutocompleteIndex(0);
     setAutocompleteRange(null);
-
     invoke<string[]>("get_workspace_files", {
       workspacePath: workspace.decoded_path,
     })
@@ -681,12 +752,78 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     const unlistenStream = listen<string>("claude-stream", (e) => {
       try {
         const rec = JSON.parse(e.payload);
+        if (rec.type === "stream_event" && rec.event?.type === "message_start") {
+          if (streamBlocksRef.current.length > 0) {
+            const completedMessage: JsonlRecord = {
+              type: "assistant",
+              message: {
+                role: "assistant",
+                content: stripThinkingBlocks(streamBlocksRef.current),
+              },
+              timestamp: new Date().toISOString(),
+            };
+            setStreamMessages((current) => [...current, completedMessage]);
+            setStreamBlocks([]);
+          }
+          return;
+        }
+        if (
+          rec.type === "stream_event"
+          && rec.event?.type === "content_block_start"
+          && typeof rec.event?.index === "number"
+          && rec.event?.content_block
+        ) {
+          setStreamBlocks((current) => {
+            const next = current.slice();
+            next[rec.event.index] = rec.event.content_block as ContentBlock;
+            return next;
+          });
+          return;
+        }
+        if (
+          rec.type === "stream_event"
+          && rec.event?.type === "content_block_delta"
+          && rec.event?.delta?.type === "thinking_delta"
+          && typeof rec.event?.delta?.thinking === "string"
+        ) {
+          setStreamBlocks((current) => appendThinkingDelta(current, rec.event?.index ?? 0, rec.event.delta.thinking));
+          return;
+        }
+        if (
+          rec.type === "stream_event"
+          && rec.event?.type === "content_block_delta"
+          && rec.event?.delta?.type === "text_delta"
+          && typeof rec.event?.delta?.text === "string"
+        ) {
+          setStreamBlocks((current) => appendStreamTextDelta(current, rec.event?.index ?? 0, rec.event.delta.text));
+          return;
+        }
+        if (
+          rec.type === "stream_event"
+          && rec.event?.type === "content_block_delta"
+          && rec.event?.delta?.type === "input_json_delta"
+          && typeof rec.event?.delta?.partial_json === "string"
+        ) {
+          setStreamBlocks((current) => updateStreamToolInputDelta(current, rec.event?.index ?? 0, rec.event.delta.partial_json));
+          return;
+        }
+        if (
+          rec.type === "stream_event"
+          && rec.event?.type === "content_block_stop"
+          && typeof rec.event?.index === "number"
+          && streamBlocksRef.current[rec.event.index]?.type === "thinking"
+        ) {
+          setStreamBlocks((current) => removeStreamBlock(current, rec.event.index));
+          return;
+        }
         if (rec.type === "assistant") {
           const content = rec.message?.content;
-          const text = Array.isArray(content)
-            ? content.filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("")
-            : typeof content === "string" ? content : "";
-          if (text) setStreamText(text);
+          const blocks = Array.isArray(content)
+            ? stripThinkingBlocks(content as ContentBlock[])
+            : typeof content === "string"
+              ? [{ type: "text" as const, text: content }]
+              : [];
+          setStreamBlocks((current) => mergeStreamBlocks(current, blocks));
           return;
         }
         if (rec.type === "system" && rec.subtype === "init") {
@@ -731,7 +868,8 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     });
     const unlistenDone = listen("claude-done", async () => {
       setStreaming(false);
-      setStreamText("");
+      setStreamMessages([]);
+      setStreamBlocks([]);
       setPendingUserMessage("");
       pendingSendRef.current = null;
       if (creatingInitialSession || !activeSession) {
@@ -757,7 +895,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     });
     const unlistenError = listen<string>("claude-error", (e) => {
       console.error("claude error:", e.payload);
-      setStreamText(prev => prev + "\n[error] " + e.payload);
+      setStreamBlocks((current) => appendStreamTextDelta(current, current.length, `\n[error] ${e.payload}`));
     });
     return () => {
       unlistenStream.then(f => f());
@@ -783,6 +921,105 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
       unlistenExit.then((fn) => fn());
     };
   }, [interactiveSessionId]);
+
+  useEffect(() => {
+    if (!activeSuggestions.length) {
+      setAutocompleteIndex(0);
+      if (autocompleteOpen) setAutocompleteOpen(false);
+      return;
+    }
+    setAutocompleteIndex((current) => Math.min(current, activeSuggestions.length - 1));
+  }, [activeSuggestions.length, autocompleteOpen]);
+
+  const syncAutocompleteState = (value: string, caret: number) => {
+    const activeTrigger = findActiveTrigger(value, caret);
+    if (!activeTrigger) {
+      setAutocompleteMode(null);
+      setAutocompleteQuery("");
+      setAutocompleteOpen(false);
+      setAutocompleteIndex(0);
+      setAutocompleteRange(null);
+      return;
+    }
+    setAutocompleteMode(activeTrigger.trigger);
+    setAutocompleteQuery(activeTrigger.query);
+    setAutocompleteOpen(true);
+    setAutocompleteRange({ start: activeTrigger.start, end: activeTrigger.end });
+  };
+
+  const insertFileReference = (filePath: string) => {
+    setSelectedFileRefs((current) => (
+      current.includes(filePath) ? current : [...current, filePath]
+    ));
+    setInput((current) => {
+      if (!autocompleteRange) return current;
+      return `${current.slice(0, autocompleteRange.start)}${current.slice(autocompleteRange.end)}`;
+    });
+    setAutocompleteMode(null);
+    setAutocompleteQuery("");
+    setAutocompleteOpen(false);
+    setAutocompleteIndex(0);
+    setAutocompleteRange(null);
+
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      const nextCaret = autocompleteRange ? autocompleteRange.start : textarea.value.length;
+      textarea.focus();
+      textarea.setSelectionRange(nextCaret, nextCaret);
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
+    });
+  };
+
+  const insertSlashCommand = (command: SlashCommandOption) => {
+    const insertion = `/${command.name} `;
+    setInput((current) => {
+      if (!autocompleteRange) return `${current}${insertion}`;
+      return `${current.slice(0, autocompleteRange.start)}${insertion}${current.slice(autocompleteRange.end)}`;
+    });
+    setAutocompleteMode(null);
+    setAutocompleteQuery("");
+    setAutocompleteOpen(false);
+    setAutocompleteIndex(0);
+    setAutocompleteRange(null);
+
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      const nextCaret = (autocompleteRange ? autocompleteRange.start : textarea.value.length) + insertion.length;
+      textarea.focus();
+      textarea.setSelectionRange(nextCaret, nextCaret);
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
+    });
+  };
+
+  const handleSend = () => {
+    const text = input.trim();
+    if ((!text && selectedFileRefs.length === 0) || streaming || (!activeSession && (!sessionToolState || initializingNewSession))) return;
+    if (text.startsWith("/") && selectedFileRefs.length === 0) {
+      setInput("");
+      setAutocompleteMode(null);
+      setAutocompleteQuery("");
+      setAutocompleteOpen(false);
+      setAutocompleteIndex(0);
+      setAutocompleteRange(null);
+      void startInteractiveOverlay(text);
+      return;
+    }
+    const message = selectedFileRefs.length
+      ? `${selectedFileRefs.map((file) => `@${file}`).join("\n")}${text ? `\n\n${text}` : ""}`
+      : text;
+    setInput("");
+    setSelectedFileRefs([]);
+    setAutocompleteMode(null);
+    setAutocompleteQuery("");
+    setAutocompleteOpen(false);
+    setAutocompleteIndex(0);
+    setAutocompleteRange(null);
+    sendClaudeMessage(message);
+  };
 
   useEffect(() => {
     if (!interactiveVisible || !terminalContainerRef.current || terminalRef.current) return;
@@ -887,79 +1124,6 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [interactiveVisible, interactiveSessionId]);
 
-  useEffect(() => {
-    if (!activeSuggestions.length) {
-      setAutocompleteIndex(0);
-      if (autocompleteOpen) setAutocompleteOpen(false);
-      return;
-    }
-    setAutocompleteIndex((current) => Math.min(current, activeSuggestions.length - 1));
-  }, [activeSuggestions.length, autocompleteOpen]);
-
-  const syncAutocompleteState = (value: string, caret: number) => {
-    const activeTrigger = findActiveTrigger(value, caret);
-    if (!activeTrigger) {
-      setAutocompleteMode(null);
-      setAutocompleteQuery("");
-      setAutocompleteOpen(false);
-      setAutocompleteIndex(0);
-      setAutocompleteRange(null);
-      return;
-    }
-    setAutocompleteMode(activeTrigger.trigger);
-    setAutocompleteQuery(activeTrigger.query);
-    setAutocompleteOpen(true);
-    setAutocompleteRange({ start: activeTrigger.start, end: activeTrigger.end });
-  };
-
-  const insertFileReference = (filePath: string) => {
-    setSelectedFileRefs((current) => (
-      current.includes(filePath) ? current : [...current, filePath]
-    ));
-    setInput((current) => {
-      if (!autocompleteRange) return current;
-      return `${current.slice(0, autocompleteRange.start)}${current.slice(autocompleteRange.end)}`;
-    });
-    setAutocompleteMode(null);
-    setAutocompleteQuery("");
-    setAutocompleteOpen(false);
-    setAutocompleteIndex(0);
-    setAutocompleteRange(null);
-
-    requestAnimationFrame(() => {
-      const textarea = textareaRef.current;
-      if (!textarea) return;
-      const nextCaret = autocompleteRange ? autocompleteRange.start : textarea.value.length;
-      textarea.focus();
-      textarea.setSelectionRange(nextCaret, nextCaret);
-      textarea.style.height = "auto";
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
-    });
-  };
-
-  const insertSlashCommand = (command: SlashCommandOption) => {
-    const insertion = `/${command.name} `;
-    setInput((current) => {
-      if (!autocompleteRange) return `${current}${insertion}`;
-      return `${current.slice(0, autocompleteRange.start)}${insertion}${current.slice(autocompleteRange.end)}`;
-    });
-    setAutocompleteMode(null);
-    setAutocompleteQuery("");
-    setAutocompleteOpen(false);
-    setAutocompleteIndex(0);
-    setAutocompleteRange(null);
-
-    requestAnimationFrame(() => {
-      const textarea = textareaRef.current;
-      if (!textarea) return;
-      const nextCaret = (autocompleteRange ? autocompleteRange.start : textarea.value.length) + insertion.length;
-      textarea.focus();
-      textarea.setSelectionRange(nextCaret, nextCaret);
-      textarea.style.height = "auto";
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
-    });
-  };
-
   const closeInteractiveOverlay = async () => {
     const sessionId = interactiveSessionId;
     setInteractiveVisible(false);
@@ -990,32 +1154,6 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     } finally {
       setInteractiveStarting(false);
     }
-  };
-
-  const handleSend = () => {
-    const text = input.trim();
-    if ((!text && selectedFileRefs.length === 0) || streaming || (!activeSession && (!sessionToolState || initializingNewSession))) return;
-    if (text.startsWith("/") && selectedFileRefs.length === 0) {
-      setInput("");
-      setAutocompleteMode(null);
-      setAutocompleteQuery("");
-      setAutocompleteOpen(false);
-      setAutocompleteIndex(0);
-      setAutocompleteRange(null);
-      void startInteractiveOverlay(text);
-      return;
-    }
-    const message = selectedFileRefs.length
-      ? `${selectedFileRefs.map((file) => `@${file}`).join("\n")}${text ? `\n\n${text}` : ""}`
-      : text;
-    setInput("");
-    setSelectedFileRefs([]);
-    setAutocompleteMode(null);
-    setAutocompleteQuery("");
-    setAutocompleteOpen(false);
-    setAutocompleteIndex(0);
-    setAutocompleteRange(null);
-    sendClaudeMessage(message);
   };
 
   const handleToggleTool = (tool: string) => {
@@ -1185,7 +1323,8 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
         ) : (
           <MessageList
             messages={messages}
-            streamText={streaming ? streamText : ""}
+            streamMessages={streaming ? streamMessages : []}
+            streamBlocks={streaming ? streamBlocks : []}
             showGenerating={streaming}
             pendingUserText={streaming ? pendingUserMessage : ""}
             sessionId={activeSession?.id}
@@ -1278,7 +1417,9 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
                   disabled={streaming || loadingMessages}
                   onChange={(e) => {
                     setInput(e.target.value);
-                    syncAutocompleteState(e.target.value, e.target.selectionStart ?? e.target.value.length);
+                    startTransition(() => {
+                      syncAutocompleteState(e.target.value, e.target.selectionStart ?? e.target.value.length);
+                    });
                   }}
                   onClick={(e) => syncAutocompleteState(e.currentTarget.value, e.currentTarget.selectionStart ?? e.currentTarget.value.length)}
                   onKeyUp={(e) => syncAutocompleteState(e.currentTarget.value, e.currentTarget.selectionStart ?? e.currentTarget.value.length)}
@@ -1388,9 +1529,31 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
                           </Text>
                         ) : null}
                       </Box>
-                      <Text size="xs" c="#71717a" style={{ flexShrink: 0 }}>
-                        {autocompleteMode === "command" ? (item as SlashCommandOption).source : "File"}
-                      </Text>
+                      <Box style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                        {autocompleteMode === "command" ? (
+                          <Box
+                            style={{
+                              padding: "3px 7px",
+                              borderRadius: 999,
+                              border: "1px solid #34343d",
+                              background: (item as SlashCommandOption).kind === "skill" ? "#1f1a12" : "#14161b",
+                            }}
+                          >
+                            <Text
+                              size="10px"
+                              fw={700}
+                              tt="uppercase"
+                              c={(item as SlashCommandOption).kind === "skill" ? "#facc15" : "#93c5fd"}
+                              style={{ lineHeight: 1 }}
+                            >
+                              {(item as SlashCommandOption).kind}
+                            </Text>
+                          </Box>
+                        ) : null}
+                        <Text size="xs" c="#71717a">
+                          {autocompleteMode === "command" ? (item as SlashCommandOption).source : "File"}
+                        </Text>
+                      </Box>
                     </UnstyledButton>
                   ))}
                 </Box>

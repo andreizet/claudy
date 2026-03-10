@@ -130,6 +130,10 @@ pub struct UsageSessionBreakdown {
     pub first_prompt: String,
 }
 
+fn truncate_for_log(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct UsageDashboard {
     pub interval: String,
@@ -173,6 +177,7 @@ pub struct SlashCommandInfo {
     pub description: Option<String>,
     pub argument_hint: Option<String>,
     pub source: String,
+    pub kind: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1214,32 +1219,7 @@ fn fetch_plan_usage(workspace_path: String, session_id: Option<String>) -> Resul
     Ok(usage)
 }
 
-#[tauri::command]
-async fn get_claude_session_init(workspace_path: String) -> Result<ClaudeSessionInit, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-    let cwd = PathBuf::from(&workspace_path);
-    if !cwd.exists() || !cwd.is_dir() {
-        return Err("Workspace path does not exist".to_string());
-    }
-
-    let (claude_bin, full_path) = claude_binary_and_path();
-    let mut cmd = std::process::Command::new(&claude_bin);
-    cmd.current_dir(&cwd);
-    cmd.env("PATH", &full_path);
-    cmd.arg("-p")
-        .arg("--verbose")
-        .arg("--output-format")
-        .arg("stream-json")
-        .arg("--no-session-persistence")
-        .arg("--permission-mode")
-        .arg("dontAsk")
-        .arg("/status")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-    let output = cmd.output().map_err(|e| e.to_string())?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
+fn parse_claude_session_init(stdout: &str) -> Option<ClaudeSessionInit> {
     for line in stdout.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -1267,7 +1247,7 @@ async fn get_claude_session_init(workspace_path: String) -> Result<ClaudeSession
 
         let mcp_servers = extract_mcp_server_names(value.get("mcp_servers"));
 
-        return Ok(ClaudeSessionInit {
+        return Some(ClaudeSessionInit {
             session_id: value.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
             cwd: value.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string()),
             model: value.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
@@ -1276,7 +1256,72 @@ async fn get_claude_session_init(workspace_path: String) -> Result<ClaudeSession
         });
     }
 
-    Err("Unable to fetch Claude session initialization metadata.".to_string())
+    None
+}
+
+fn run_claude_session_init_probe(
+    claude_bin: &str,
+    full_path: &str,
+    cwd: &Path,
+    use_no_session_persistence: bool,
+) -> Result<std::process::Output, String> {
+    let mut cmd = std::process::Command::new(claude_bin);
+    cmd.current_dir(cwd);
+    cmd.env("PATH", full_path);
+    cmd.arg("-p")
+        .arg("--verbose")
+        .arg("--output-format")
+        .arg("stream-json");
+
+    if use_no_session_persistence {
+        cmd.arg("--no-session-persistence");
+    }
+
+    cmd.arg("--permission-mode")
+        .arg("dontAsk")
+        .arg("/status")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    cmd.output().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_claude_session_init(workspace_path: String) -> Result<ClaudeSessionInit, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cwd = PathBuf::from(&workspace_path);
+        if !cwd.exists() || !cwd.is_dir() {
+            return Err("Workspace path does not exist".to_string());
+        }
+
+        let (claude_bin, full_path) = claude_binary_and_path();
+        let first_output = run_claude_session_init_probe(&claude_bin, &full_path, &cwd, true)?;
+        let first_stdout = String::from_utf8_lossy(&first_output.stdout);
+        if let Some(init) = parse_claude_session_init(&first_stdout) {
+            return Ok(init);
+        }
+
+        let first_stderr = String::from_utf8_lossy(&first_output.stderr);
+        if first_stderr.contains("unknown option '--no-session-persistence'") {
+            let fallback_output = run_claude_session_init_probe(&claude_bin, &full_path, &cwd, false)?;
+            let fallback_stdout = String::from_utf8_lossy(&fallback_output.stdout);
+            if let Some(init) = parse_claude_session_init(&fallback_stdout) {
+                return Ok(init);
+            }
+
+            let fallback_stderr = String::from_utf8_lossy(&fallback_output.stderr);
+            return Err(if fallback_stderr.trim().is_empty() {
+                "Unable to fetch Claude session initialization metadata.".to_string()
+            } else {
+                fallback_stderr.trim().to_string()
+            });
+        }
+
+        Err(if first_stderr.trim().is_empty() {
+            "Unable to fetch Claude session initialization metadata.".to_string()
+        } else {
+            first_stderr.trim().to_string()
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1699,6 +1744,7 @@ fn collect_custom_slash_commands(
             description: parse_frontmatter_value(frontmatter, "description"),
             argument_hint: parse_frontmatter_value(frontmatter, "argument-hint"),
             source: source.to_string(),
+            kind: if is_skill_dir { "skill".to_string() } else { "command".to_string() },
         });
     }
 }
@@ -2431,7 +2477,7 @@ fn spawn_claude_message(
         for line in BufReader::new(stdout).lines().flatten() {
             let trimmed = line.trim().to_string();
             if !trimmed.is_empty() {
-                eprintln!("[claude stdout] {}", &trimmed[..trimmed.len().min(120)]);
+                eprintln!("[claude stdout] {}", truncate_for_log(&trimmed, 120));
                 app.emit("claude-stream", trimmed).ok();
             }
         }

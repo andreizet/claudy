@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Box, ScrollArea, Text } from "@mantine/core";
 import {
   ChevronDown,
   ChevronUp,
   FilePenLine,
   FileText,
+  Brain,
   Terminal,
   Wrench,
 } from "lucide-react";
@@ -53,14 +54,15 @@ SyntaxHighlighter.registerLanguage("markdown", markdown);
 
 interface Props {
   messages: JsonlRecord[];
-  streamText?: string;
+  streamMessages?: JsonlRecord[];
+  streamBlocks?: ContentBlock[];
   showGenerating?: boolean;
   pendingUserText?: string;
   sessionId?: string | null;
   userAvatarUrl?: string;
 }
 
-export default function MessageList({ messages, streamText, showGenerating, pendingUserText, sessionId, userAvatarUrl }: Props) {
+function MessageList({ messages, streamMessages, streamBlocks, showGenerating, pendingUserText, sessionId, userAvatarUrl }: Props) {
   const renderStart = performance.now();
   const viewportRef = useRef<HTMLDivElement>(null);
   const [atTop, setAtTop] = useState(true);
@@ -68,7 +70,7 @@ export default function MessageList({ messages, streamText, showGenerating, pend
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [itemHeights, setItemHeights] = useState<Record<number, number>>({});
-  const prevItemCountRef = useRef(messages.length + (streamText ? 1 : 0));
+  const prevItemCountRef = useRef(messages.length + (streamMessages?.length ?? 0) + ((streamBlocks?.length || showGenerating) ? 1 : 0));
 
   const refreshScrollState = () => {
     const el = viewportRef.current;
@@ -84,7 +86,8 @@ export default function MessageList({ messages, streamText, showGenerating, pend
   const items: Array<
     | { key: string; kind: "message"; record: JsonlRecord }
     | { key: string; kind: "pending-user"; text: string }
-    | { key: string; kind: "stream"; text: string }
+    | { key: string; kind: "stream-message"; record: JsonlRecord }
+    | { key: string; kind: "stream"; blocks: ContentBlock[] }
   > = [
     ...messages.map((record, index) => ({
       key: `${sessionId ?? "session"}-message-${index}`,
@@ -92,8 +95,13 @@ export default function MessageList({ messages, streamText, showGenerating, pend
       record,
     })),
     ...(pendingUserText ? [{ key: `${sessionId ?? "session"}-pending-user`, kind: "pending-user" as const, text: pendingUserText }] : []),
-    ...((streamText || showGenerating)
-      ? [{ key: `${sessionId ?? "session"}-stream`, kind: "stream" as const, text: streamText ?? "" }]
+    ...((streamMessages ?? []).map((record, index) => ({
+      key: `${sessionId ?? "session"}-stream-message-${index}`,
+      kind: "stream-message" as const,
+      record,
+    }))),
+    ...(((streamBlocks && streamBlocks.length > 0) || showGenerating)
+      ? [{ key: `${sessionId ?? "session"}-stream`, kind: "stream" as const, blocks: streamBlocks ?? [] }]
       : []),
   ];
 
@@ -205,7 +213,7 @@ export default function MessageList({ messages, streamText, showGenerating, pend
     }
   }
 
-  if (messages.length === 0 && !streamText && !showGenerating && !pendingUserText) {
+  if (messages.length === 0 && (streamMessages?.length ?? 0) === 0 && (!streamBlocks || streamBlocks.length === 0) && !showGenerating && !pendingUserText) {
     return (
       <Box style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <Text size="sm" c="#3f3f46">No messages in this session</Text>
@@ -228,12 +236,12 @@ export default function MessageList({ messages, streamText, showGenerating, pend
                   top={offsets[actualIndex]}
                   setItemHeights={setItemHeights}
                 >
-                  {item.kind === "message" ? (
+                  {item.kind === "message" || item.kind === "stream-message" ? (
                     <MessageItem record={item.record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />
                   ) : item.kind === "pending-user" ? (
                     <UserBubble text={item.text} avatarUrl={userAvatarUrl} />
                   ) : (
-                    <StreamingItem text={item.text} />
+                    <StreamingItem blocks={item.blocks} />
                   )}
                 </MeasuredItem>
               );
@@ -243,12 +251,12 @@ export default function MessageList({ messages, streamText, showGenerating, pend
           <Box style={{ display: "flex", flexDirection: "column" }}>
             {items.map((item) => (
               <Box key={item.key}>
-                {item.kind === "message" ? (
+                {item.kind === "message" || item.kind === "stream-message" ? (
                   <MessageItem record={item.record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />
                 ) : item.kind === "pending-user" ? (
                   <UserBubble text={item.text} avatarUrl={userAvatarUrl} />
                 ) : (
-                  <StreamingItem text={item.text} />
+                  <StreamingItem blocks={item.blocks} />
                 )}
               </Box>
             ))}
@@ -267,6 +275,8 @@ export default function MessageList({ messages, streamText, showGenerating, pend
     </Box>
   );
 }
+
+export default memo(MessageList);
 
 function findVisibleIndex(offsets: number[], target: number): number {
   let low = 0;
@@ -335,10 +345,27 @@ function MeasuredItem({
   );
 }
 
-function StreamingItem({ text }: { text: string }) {
+function StreamingItem({ blocks }: { blocks: ContentBlock[] }) {
+  const record: JsonlRecord = {
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: blocks,
+    },
+    timestamp: new Date(0).toISOString(),
+  };
   return (
     <Box style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-      <AssistantText text={text} />
+      {blocks.map((block, index) => (
+        <AssistantBlock
+          key={`${block.type}-${index}`}
+          block={block}
+          record={record}
+          isLast={index === blocks.length - 1}
+          toolResults={new Map()}
+          showThinking
+        />
+      ))}
       <GeneratingIndicator />
     </Box>
   );
@@ -522,11 +549,13 @@ function AssistantBlock({
   record,
   isLast,
   toolResults,
+  showThinking = false,
 }: {
   block: ContentBlock;
   record: JsonlRecord;
   isLast: boolean;
   toolResults: Map<string, { content: string; isError: boolean }>;
+  showThinking?: boolean;
 }) {
   if (block.type === "text") {
     if (!block.text.trim()) return null;
@@ -546,10 +575,55 @@ function AssistantBlock({
   }
 
   if (block.type === "thinking") {
-    return null;
+    if (!showThinking || !block.thinking.trim()) return null;
+    return <ThinkingCard thinking={block.thinking} />;
   }
 
   return null;
+}
+
+function ThinkingCard({ thinking }: { thinking: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <Box
+      style={{
+        borderRadius: 8,
+        background: "#15161a",
+        border: "1px solid #27272a",
+        maxWidth: "88%",
+        overflow: "hidden",
+      }}
+    >
+      <Box
+        onClick={() => setExpanded((current) => !current)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "7px 12px",
+          cursor: "pointer",
+        }}
+      >
+        <Brain size={14} strokeWidth={2} style={{ color: "#71717a", flexShrink: 0 }} />
+        <Text fw={500} c="#d4d4d8" style={{ fontSize: 14, flex: 1 }}>
+          Thinking
+        </Text>
+        {expanded ? (
+          <ChevronUp size={12} strokeWidth={2} style={{ color: "#52525b", flexShrink: 0 }} />
+        ) : (
+          <ChevronDown size={12} strokeWidth={2} style={{ color: "#52525b", flexShrink: 0 }} />
+        )}
+      </Box>
+      {expanded && (
+        <Box style={{ borderTop: "1px solid #27272a", padding: "10px 12px" }}>
+          <Text size="sm" c="#a1a1aa" style={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
+            {thinking}
+          </Text>
+        </Box>
+      )}
+    </Box>
+  );
 }
 
 // ── Assistant text (markdown) ─────────────────────────────────────────────────

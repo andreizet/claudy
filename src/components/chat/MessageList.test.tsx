@@ -119,4 +119,26 @@ describe("MessageList behavior", () => {
       expect(bottomButton.disabled).toBe(true);
     });
   });
+
+  it("shows a collapsed thinking card only for the active stream and expands on click", async () => {
+    renderWithProviders(
+      <MessageList
+        messages={[]}
+        sessionId="session-thinking"
+        showGenerating
+        streamBlocks={[
+          { type: "thinking", thinking: "Inspecting files" },
+          { type: "text", text: "Done" },
+        ]}
+      />
+    );
+    setupViewport();
+
+    expect(screen.getByText("Thinking")).toBeInTheDocument();
+    expect(screen.queryByText("Inspecting files")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Thinking"));
+
+    expect(await screen.findByText("Inspecting files")).toBeInTheDocument();
+  });
 });
