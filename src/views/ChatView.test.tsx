@@ -32,6 +32,7 @@ describe("SessionItem", () => {
         session={mockSessions[0]}
         title="Implement the login flow"
         active={true}
+        activity={undefined}
         pinned={false}
         confirmingDelete={false}
         renaming={false}
@@ -62,6 +63,7 @@ describe("SessionItem", () => {
         session={mockSessions[0]}
         title="Implement the login flow"
         active={false}
+        activity={undefined}
         pinned={false}
         confirmingDelete={false}
         renaming={false}
@@ -96,6 +98,7 @@ describe("SessionItem", () => {
         session={mockSessions[1]}
         title="Fix the dashboard charts"
         active={false}
+        activity={undefined}
         pinned={false}
         confirmingDelete={true}
         renaming={false}
@@ -119,5 +122,57 @@ describe("SessionItem", () => {
 
     expect(onCancelDelete).toHaveBeenCalledTimes(1);
     expect(onConfirmDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders session activity indicators", () => {
+    const { rerender } = renderWithMantine(
+      <SessionItem
+        session={mockSessions[0]}
+        title="Implement the login flow"
+        active={false}
+        activity="generating"
+        pinned={false}
+        confirmingDelete={false}
+        renaming={false}
+        renameValue=""
+        loading={false}
+        onClick={() => {}}
+        onPin={() => {}}
+        onRename={() => {}}
+        onRenameChange={() => {}}
+        onRenameCommit={() => {}}
+        onRenameCancel={() => {}}
+        onDelete={() => {}}
+        onConfirmDelete={() => {}}
+        onCancelDelete={() => {}}
+      />
+    );
+
+    expect(screen.getByLabelText("Session generating")).toBeInTheDocument();
+
+    rerender(
+      <SessionItem
+        session={mockSessions[0]}
+        title="Implement the login flow"
+        active={false}
+        activity="completed"
+        pinned={false}
+        confirmingDelete={false}
+        renaming={false}
+        renameValue=""
+        loading={false}
+        onClick={() => {}}
+        onPin={() => {}}
+        onRename={() => {}}
+        onRenameChange={() => {}}
+        onRenameCommit={() => {}}
+        onRenameCancel={() => {}}
+        onDelete={() => {}}
+        onConfirmDelete={() => {}}
+        onCancelDelete={() => {}}
+      />
+    );
+
+    expect(screen.getByLabelText("Session completed")).toBeInTheDocument();
   });
 });

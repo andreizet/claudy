@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "../../test/providers";
 import { JsonlRecord } from "../../types";
@@ -140,5 +140,54 @@ describe("MessageList behavior", () => {
     fireEvent.click(screen.getByText("Thinking"));
 
     expect(await screen.findByText("Inspecting files")).toBeInTheDocument();
+  });
+
+  it("renders leading file references in user messages as badges without remove controls", () => {
+    renderWithProviders(
+      <MessageList
+        sessionId="session-files"
+        messages={[
+          {
+            type: "user",
+            timestamp: "2026-03-10T08:00:00Z",
+            message: {
+              role: "user",
+              content: "@src/App.tsx\n@src/views/HomeView.tsx\n\nplease review these files",
+            },
+          },
+        ]}
+      />
+    );
+    setupViewport();
+
+    const firstBadge = screen.getByText("src/App.tsx").parentElement as HTMLElement;
+    const secondBadge = screen.getByText("src/views/HomeView.tsx").parentElement as HTMLElement;
+
+    expect(firstBadge).toBeInTheDocument();
+    expect(secondBadge).toBeInTheDocument();
+    expect(screen.getByText("please review these files")).toBeInTheDocument();
+    expect(within(firstBadge).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(secondBadge).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("hides expanded skill prompt boilerplate recorded as a user message", () => {
+    renderWithProviders(
+      <MessageList
+        sessionId="session-skill"
+        messages={[
+          {
+            type: "user",
+            timestamp: "2026-03-10T08:05:00Z",
+            message: {
+              role: "user",
+              content: "Base directory for this skill: /Users/test/.claude/skills/my-skill\n\nWhen referencing files in this skill, prefer relative paths.",
+            },
+          },
+        ]}
+      />
+    );
+    setupViewport();
+
+    expect(screen.queryByText(/Base directory for this skill/)).not.toBeInTheDocument();
   });
 });

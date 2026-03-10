@@ -31,6 +31,7 @@ import sql from "react-syntax-highlighter/dist/esm/languages/prism/sql";
 import toml from "react-syntax-highlighter/dist/esm/languages/prism/toml";
 import markdown from "react-syntax-highlighter/dist/esm/languages/prism/markdown";
 import { JsonlRecord, ContentBlock, ContentBlockToolUse, ContentBlockToolResult } from "../../types";
+import FileReferenceBadge from "./FileReferenceBadge";
 
 const DEFAULT_MESSAGE_HEIGHT = 220;
 const DEFAULT_STREAM_HEIGHT = 120;
@@ -297,7 +298,7 @@ function findVisibleIndex(offsets: number[], target: number): number {
 function findVisibleEndIndex(
   offsets: number[],
   itemHeights: Record<number, number>,
-  items: Array<{ kind: "message" | "pending-user" | "stream" }>,
+  items: Array<{ kind: "message" | "pending-user" | "stream-message" | "stream" }>,
   targetBottom: number
 ): number {
   let index = findVisibleIndex(offsets, targetBottom);
@@ -385,7 +386,7 @@ function GeneratingIndicator() {
         border: "1px solid #23232a",
       }}
     >
-      <Text size="sm" c="#71717a">Generating</Text>
+      <Text c="#71717a" style={{ fontSize: 14 }}>Generating</Text>
       <Box style={{ display: "flex", alignItems: "center", gap: 4 }}>
         {[0, 1, 2].map((index) => (
           <Box
@@ -466,6 +467,7 @@ function extractTag(text: string, tag: string): string | null {
 function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
   // hide caveat messages
   if (extractTag(text, "local-command-caveat") !== null) return null;
+  if (isExpandedSkillPrompt(text)) return null;
 
   // command-name / command-message / command-args block
   const cmdName = extractTag(text, "command-name");
@@ -512,6 +514,8 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
     );
   }
 
+  const { fileRefs, body } = extractUserBubbleContent(text);
+
   return (
     <Box style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-end", gap: 8, marginBottom: 16 }}>
       <Box
@@ -524,11 +528,25 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
           color: "#e4e4e7",
           fontSize: 14,
           lineHeight: 1.6,
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
         }}
       >
-        {text}
+        {fileRefs.length > 0 ? (
+          <Box style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: body ? 10 : 0 }}>
+            {fileRefs.map((file) => (
+              <FileReferenceBadge key={file} file={file} />
+            ))}
+          </Box>
+        ) : null}
+        {body ? (
+          <Box
+            style={{
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {body}
+          </Box>
+        ) : null}
       </Box>
       <Box style={{ width: 28, height: 28, borderRadius: "50%", background: "#27272a", border: "1px solid #3f3f46", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
         <Box
@@ -539,6 +557,19 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
         />
       </Box>
     </Box>
+  );
+}
+
+function isExpandedSkillPrompt(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) return false;
+
+  return (
+    normalized.startsWith("Base directory for this skill")
+    || (
+      normalized.includes("Base directory for this skill")
+      && normalized.includes("When referencing files in this skill")
+    )
   );
 }
 
@@ -1177,4 +1208,28 @@ function extractUserText(content: ContentBlock[]): string {
     .filter((b) => b.type === "text")
     .map((b) => (b as { type: "text"; text: string }).text)
     .join("\n");
+}
+
+function extractUserBubbleContent(text: string): { fileRefs: string[]; body: string } {
+  const lines = text.split("\n");
+  const fileRefs: string[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.startsWith("@")) break;
+    const file = line.slice(1).trim();
+    if (!file) break;
+    fileRefs.push(file);
+    index += 1;
+  }
+
+  while (index < lines.length && lines[index].trim() === "") {
+    index += 1;
+  }
+
+  return {
+    fileRefs,
+    body: lines.slice(index).join("\n"),
+  };
 }

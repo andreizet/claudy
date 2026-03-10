@@ -252,6 +252,59 @@ describe("ChatView core message flow", () => {
     expect(screen.getByText("Type directly in the terminal. Press Esc or use close to return to chat.")).toBeInTheDocument();
   });
 
+  it("selected skill slash command sends normally without opening the interactive overlay", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_claude_session_init":
+          return Promise.resolve({
+            session_id: mockWorkspace.sessions[0].id,
+            cwd: mockWorkspace.decoded_path,
+            model: "claude-sonnet-4-6",
+            tools: ["Read", "Edit", "Bash"],
+            mcp_servers: [],
+          });
+        case "get_session_messages":
+          return Promise.resolve([]);
+        case "get_workspace_files":
+          return Promise.resolve([]);
+        case "get_workspace_slash_commands":
+          return Promise.resolve([
+            {
+              name: "my-skill",
+              description: "Run a custom skill",
+              source: "user",
+              kind: "skill",
+            },
+          ]);
+        case "get_workspace_favicon":
+          return Promise.resolve(null);
+        case "send_message":
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    renderChat(mockWorkspace);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_workspace_slash_commands", expect.any(Object)));
+
+    const textarea = screen.getByPlaceholderText("Ask for follow-up changes…");
+    fireEvent.change(textarea, { target: { value: "/my", selectionStart: 3 } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await screen.findByText("/my-skill");
+
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("send_message", expect.objectContaining({
+        sessionId: mockWorkspace.sessions[0].id,
+        message: "/my-skill",
+      }));
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("start_interactive_command", expect.anything());
+    expect(screen.queryByText("Type directly in the terminal. Press Esc or use close to return to chat.")).not.toBeInTheDocument();
+  });
+
   it("@file autocomplete creates removable badges and changes the sent payload", async () => {
     invokeMock.mockImplementation((command: string) => {
       switch (command) {
@@ -563,6 +616,56 @@ describe("ChatView core message flow", () => {
 
     await waitFor(() => {
       expect(screen.getByText("stream-blocks:")).toBeInTheDocument();
+    });
+  });
+
+  it("keeps a generating marker on the original session and turns it into a check when completion happens off-screen", async () => {
+    const listeners = new Map<string, (payload: { payload: string }) => void>();
+    listenMock.mockImplementation((event: string, callback: (payload: { payload: string }) => void) => {
+      listeners.set(event, callback);
+      return Promise.resolve(() => listeners.delete(event));
+    });
+    invokeMock.mockImplementation((command: string, args?: { filePath?: string }) => {
+      switch (command) {
+        case "get_session_messages":
+          if (args?.filePath === mockWorkspace.sessions[1].file_path) return Promise.resolve([]);
+          return Promise.resolve([]);
+        case "get_workspace_files":
+          return Promise.resolve([]);
+        case "get_workspace_slash_commands":
+          return Promise.resolve([]);
+        case "get_workspace_favicon":
+          return Promise.resolve(null);
+        case "send_message":
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    renderChat(mockWorkspace);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_session_messages", expect.any(Object)));
+
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "keep working", selectionStart: 12 } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    const getFirstSessionRow = () => screen.getByText("Implement the login flow").closest("div") as HTMLElement;
+    expect(within(getFirstSessionRow()).getByLabelText("Session generating")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Fix the dashboard charts"));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("get_session_messages", {
+        filePath: mockWorkspace.sessions[1].file_path,
+      });
+    });
+    expect(within(getFirstSessionRow()).getByLabelText("Session generating")).toBeInTheDocument();
+
+    listeners.get("claude-done")?.({ payload: "" });
+
+    await waitFor(() => {
+      expect(within(getFirstSessionRow()).getByLabelText("Session completed")).toBeInTheDocument();
     });
   });
 });

@@ -1,10 +1,12 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, ScrollArea, UnstyledButton, Group, Skeleton, Tooltip } from "@mantine/core";
 import {
+  Check,
   ChevronDown,
   ChevronLeft as ChevronLeftIcon,
   Cog,
   Folder,
+  LoaderCircle,
   Pen,
   Pin,
   Plus,
@@ -20,6 +22,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ClaudeAccountInfo, ContentBlock, ContentBlockToolUse, DiscoveredWorkspace, DiscoveredSession, JsonlRecord } from "../types";
 import MessageList from "../components/chat/MessageList";
+import FileReferenceBadge from "../components/chat/FileReferenceBadge";
 import { md5 } from "../shared/md5";
 import {
   extractMcpServers,
@@ -86,6 +89,8 @@ interface PendingSendContext {
   sessionId: string | null;
   allowedTools?: string[];
 }
+
+type SessionActivityState = "generating" | "completed";
 
 interface ClaudeSessionInit {
   session_id: string | null;
@@ -238,17 +243,28 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
   const [loadingSessionSettings, setLoadingSessionSettings] = useState(false);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [sessionActivityById, setSessionActivityById] = useState<Record<string, SessionActivityState>>({});
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const interactiveWrittenLengthRef = useRef(0);
+  const activeSessionRef = useRef<DiscoveredSession | null>(activeSession);
+  const creatingInitialSessionRef = useRef(creatingInitialSession);
   const pendingSendRef = useRef<PendingSendContext | null>(null);
   const streamBlocksRef = useRef<ContentBlock[]>([]);
 
   useEffect(() => {
     streamBlocksRef.current = streamBlocks;
   }, [streamBlocks]);
+
+  useEffect(() => {
+    activeSessionRef.current = activeSession;
+  }, [activeSession]);
+
+  useEffect(() => {
+    creatingInitialSessionRef.current = creatingInitialSession;
+  }, [creatingInitialSession]);
 
   const loadSessionNames = () => {
     try {
@@ -375,6 +391,15 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     persistPinnedSession(pinnedSessionId === session.id ? null : session.id);
   };
 
+  const clearCompletedSessionActivity = (sessionId: string) => {
+    setSessionActivityById((current) => {
+      if (current[sessionId] !== "completed") return current;
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
+    });
+  };
+
   const handleStartNewSession = () => {
     setActiveSession(null);
     setMessages([]);
@@ -408,6 +433,12 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
           ? nextSessions.find((item) => item.id === nextPinnedId) ?? null
           : null;
         return pinnedRemaining ?? nextSessions[0] ?? null;
+      });
+      setSessionActivityById((current) => {
+        if (!current[session.id]) return current;
+        const next = { ...current };
+        delete next[session.id];
+        return next;
       });
       queryClient.invalidateQueries({ queryKey: ["existing-sessions"] }).catch(console.error);
     } catch (error) {
@@ -473,6 +504,11 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     setMcpGroupsExpanded(false);
     setInitializingNewSession(sessions.length === 0);
     setLoadingSessionSettings(false);
+    setSessionActivityById((current) => {
+      const validSessionIds = new Set(sessions.map((session) => session.id));
+      const nextEntries = Object.entries(current).filter(([sessionId]) => validSessionIds.has(sessionId));
+      return nextEntries.length === Object.keys(current).length ? current : Object.fromEntries(nextEntries);
+    });
   }, [workspace.encoded_name, workspace.sessions]);
 
   const activeSessionDisplayTitle = activeSession ? getSessionDisplayTitle(activeSession) : null;
@@ -538,6 +574,14 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
       : deduped;
     return ranked.slice(0, 8);
   }, [deferredAutocompleteQuery, slashCommands]);
+  const availableSlashCommands = useMemo(
+    () => Array.from(new Map([...BUILTIN_SLASH_COMMANDS, ...slashCommands].map((command) => [command.name, command])).values()),
+    [slashCommands]
+  );
+  const slashCommandKindByName = useMemo(
+    () => new Map(availableSlashCommands.map((command) => [command.name, command.kind])),
+    [availableSlashCommands]
+  );
 
   const activeSuggestions = autocompleteMode === "command" ? commandSuggestions : fileSuggestions;
 
@@ -617,6 +661,12 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
       sessionId: activeSession?.id ?? null,
       allowedTools: effectiveAllowedTools,
     };
+    if (activeSession?.id) {
+      setSessionActivityById((current) => ({
+        ...current,
+        [activeSession.id]: "generating",
+      }));
+    }
     const command = activeSession
       ? invoke("send_message", {
           sessionId: activeSession.id,
@@ -637,12 +687,21 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
           });
         })();
     command.catch((e) => {
+      const failedSessionId = pendingSendRef.current?.sessionId;
       console.error(e);
       setStreaming(false);
       setStreamMessages([]);
       setStreamBlocks([]);
       setPendingUserMessage("");
       setCreatingInitialSession(false);
+      if (failedSessionId) {
+        setSessionActivityById((current) => {
+          if (!current[failedSessionId]) return current;
+          const next = { ...current };
+          delete next[failedSessionId];
+          return next;
+        });
+      }
       pendingSendRef.current = null;
     });
   };
@@ -836,7 +895,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
             mcpServers,
             workspacePath: workspace.decoded_path,
           });
-          const sessionId = typeof rec.session_id === "string" ? rec.session_id : activeSession?.id ?? null;
+          const sessionId = typeof rec.session_id === "string" ? rec.session_id : activeSessionRef.current?.id ?? null;
           const sessionPolicy = loadSessionToolPolicy(sessionId);
           const defaultPolicy = loadDefaultToolPolicy();
           const nextState = {
@@ -867,12 +926,22 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
       } catch {}
     });
     const unlistenDone = listen("claude-done", async () => {
+      const completedSessionId = pendingSendRef.current?.sessionId ?? null;
+      const currentActiveSession = activeSessionRef.current;
       setStreaming(false);
       setStreamMessages([]);
       setStreamBlocks([]);
       setPendingUserMessage("");
+      if (completedSessionId) {
+        setSessionActivityById((current) => {
+          const next = { ...current };
+          if (currentActiveSession?.id === completedSessionId) delete next[completedSessionId];
+          else next[completedSessionId] = "completed";
+          return next;
+        });
+      }
       pendingSendRef.current = null;
-      if (creatingInitialSession || !activeSession) {
+      if (creatingInitialSessionRef.current || !currentActiveSession) {
         try {
           const refreshed = await invoke<DiscoveredWorkspace>("describe_workspace", {
             workspacePath: workspace.decoded_path,
@@ -891,7 +960,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
         }
         return;
       }
-      loadMessages(activeSession.file_path);
+      loadMessages(currentActiveSession.file_path);
     });
     const unlistenError = listen<string>("claude-error", (e) => {
       console.error("claude error:", e.payload);
@@ -902,7 +971,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
       unlistenDone.then(f => f());
       unlistenError.then(f => f());
     };
-  }, [activeSession, creatingInitialSession, queryClient, workspace.decoded_path]);
+  }, [queryClient, workspace.decoded_path]);
 
   useEffect(() => {
     const unlistenOutput = listen<InteractiveEventPayload>("claudy://interactive-output", (event) => {
@@ -999,6 +1068,18 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     const text = input.trim();
     if ((!text && selectedFileRefs.length === 0) || streaming || (!activeSession && (!sessionToolState || initializingNewSession))) return;
     if (text.startsWith("/") && selectedFileRefs.length === 0) {
+      const commandName = text.slice(1).trim().split(/\s+/, 1)[0] ?? "";
+      const commandKind = slashCommandKindByName.get(commandName);
+      if (commandKind === "skill") {
+        setInput("");
+        setAutocompleteMode(null);
+        setAutocompleteQuery("");
+        setAutocompleteOpen(false);
+        setAutocompleteIndex(0);
+        setAutocompleteRange(null);
+        sendClaudeMessage(text);
+        return;
+      }
       setInput("");
       setAutocompleteMode(null);
       setAutocompleteQuery("");
@@ -1257,12 +1338,17 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
                   session={s}
                   title={getSessionDisplayTitle(s)}
                   active={activeSession?.id === s.id}
+                  activity={sessionActivityById[s.id]}
                   pinned={pinnedSessionId === s.id}
                   confirmingDelete={pendingDeleteSessionId === s.id}
                   renaming={renamingSessionId === s.id}
                   renameValue={renamingSessionId === s.id ? renameValue : ""}
                   loading={loadingSessionId === s.id}
-                  onClick={() => setActiveSession(s)}
+                  onClick={() => {
+                    activeSessionRef.current = s;
+                    setActiveSession(s);
+                    clearCompletedSessionActivity(s.id);
+                  }}
                   onPin={() => handlePinSession(s)}
                   onRename={() => {
                     setRenamingSessionId(s.id);
@@ -1377,37 +1463,11 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
                 {selectedFileRefs.length > 0 ? (
                   <Box style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
                     {selectedFileRefs.map((file) => (
-                      <Box
+                      <FileReferenceBadge
                         key={file}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 8,
-                          maxWidth: "100%",
-                          background: "#111115",
-                          border: "1px solid #30303a",
-                          borderRadius: 999,
-                          padding: "5px 10px",
-                        }}
-                      >
-                        <Text size="xs" c="#e4e4e7" style={{ lineHeight: 1.2 }}>
-                          {file}
-                        </Text>
-                        <UnstyledButton
-                          onClick={() => setSelectedFileRefs((current) => current.filter((item) => item !== file))}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            width: 14,
-                            height: 14,
-                            color: "#a1a1aa",
-                            flexShrink: 0,
-                          }}
-                        >
-                          <CloseIcon />
-                        </UnstyledButton>
-                      </Box>
+                        file={file}
+                        onRemove={() => setSelectedFileRefs((current) => current.filter((item) => item !== file))}
+                      />
                     ))}
                   </Box>
                 ) : null}
@@ -1683,6 +1743,7 @@ export function SessionItem({
   session,
   title,
   active,
+  activity,
   pinned,
   confirmingDelete,
   renaming,
@@ -1701,6 +1762,7 @@ export function SessionItem({
   session: DiscoveredSession;
   title: string;
   active: boolean;
+  activity?: SessionActivityState;
   pinned: boolean;
   confirmingDelete: boolean;
   renaming: boolean;
@@ -1748,6 +1810,7 @@ export function SessionItem({
     >
       {confirmingDelete ? (
         <>
+          <SessionActivityIndicator />
           <Text size="xs" c="#e4e4e7" style={{ flex: 1, minWidth: 0 }}>
             Delete session?
           </Text>
@@ -1760,14 +1823,7 @@ export function SessionItem({
         </>
       ) : (
         <>
-          <ActionIconButton
-            visible={hovered || pinned}
-            active={pinned}
-            title={pinned ? "Unpin session" : "Pin session"}
-            onClick={onPin}
-          >
-            <PinIcon />
-          </ActionIconButton>
+          <SessionActivityIndicator activity={activity} />
           {renaming ? (
             <input
               aria-label="Session name"
@@ -1814,6 +1870,14 @@ export function SessionItem({
             {loading ? "Loading..." : relativeTime(session.modified_at)}
           </Text>
           <ActionIconButton
+            visible={hovered || pinned}
+            active={pinned}
+            title={pinned ? "Unpin session" : "Pin session"}
+            onClick={onPin}
+          >
+            <PinIcon />
+          </ActionIconButton>
+          <ActionIconButton
             visible={hovered && !renaming}
             active={false}
             title="Rename session"
@@ -1831,6 +1895,38 @@ export function SessionItem({
           </ActionIconButton>
         </>
       )}
+    </Box>
+  );
+}
+
+function SessionActivityIndicator({ activity }: { activity?: SessionActivityState }) {
+  return (
+    <Box
+      aria-label={activity ? `Session ${activity}` : undefined}
+      title={activity === "generating" ? "Generating response" : activity === "completed" ? "Response completed" : undefined}
+      style={{
+        width: 16,
+        height: 16,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        color: activity === "completed" ? "#4ade80" : "#FFE100",
+      }}
+    >
+      {activity === "generating" ? (
+        <>
+          <LoaderCircle size={13} strokeWidth={1.9} style={{ animation: "claudySessionSpin 1s linear infinite" }} />
+          <style>{`
+            @keyframes claudySessionSpin {
+              from { transform: rotate(0deg); }
+              to { transform: rotate(360deg); }
+            }
+          `}</style>
+        </>
+      ) : activity === "completed" ? (
+        <Check size={13} strokeWidth={2.2} />
+      ) : null}
     </Box>
   );
 }

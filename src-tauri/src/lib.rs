@@ -134,6 +134,13 @@ fn truncate_for_log(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
+fn escape_for_log(value: &str, max_chars: usize) -> String {
+    truncate_for_log(
+        &value.chars().flat_map(|ch| ch.escape_default()).collect::<String>(),
+        max_chars,
+    )
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct UsageDashboard {
     pub interval: String,
@@ -2285,6 +2292,10 @@ fn start_interactive_command(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
     {
+        eprintln!(
+            "[claude interactive input] {}",
+            escape_for_log(&initial_input, 500)
+        );
         let initial_writer = Arc::clone(&writer);
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(1200));
@@ -2349,6 +2360,11 @@ fn write_interactive_command(
     session_id: String,
     input: String,
 ) -> Result<(), String> {
+    eprintln!(
+        "[claude interactive input] session={} input={}",
+        session_id,
+        escape_for_log(&input, 500)
+    );
     let sessions = store.sessions.lock().map_err(|_| "Interactive session lock poisoned".to_string())?;
     let session = sessions
         .get(&session_id)
@@ -2424,6 +2440,30 @@ fn spawn_claude_message(
         let (claude_bin, full_path) = claude_binary_and_path();
 
         eprintln!("[send_message] claude={} cwd={} session={:?}", claude_bin, cwd, session_id);
+        eprintln!(
+            "[claude command] {} -p \"{}\" --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk{}{}{}{}",
+            claude_bin,
+            escape_for_log(&message, 500),
+            allowed_tools
+                .as_ref()
+                .filter(|tools| !tools.is_empty())
+                .map(|tools| format!(" --allowedTools {}", escape_for_log(&tools.join(","), 300)))
+                .unwrap_or_default(),
+            session_id
+                .as_ref()
+                .map(|id| format!(" --resume {}", escape_for_log(id, 120)))
+                .unwrap_or_default(),
+            if !model.is_empty() && model != "default" {
+                format!(" --model {}", escape_for_log(&model, 120))
+            } else {
+                String::new()
+            },
+            if !effort.is_empty() && effort != "default" {
+                format!(" --effort {}", escape_for_log(&effort, 120))
+            } else {
+                String::new()
+            },
+        );
 
         let mut cmd = std::process::Command::new(&claude_bin);
         cmd.arg("-p").arg(&message)
