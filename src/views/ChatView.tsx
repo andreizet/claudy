@@ -1872,7 +1872,7 @@ export function SessionItem({
         </>
       ) : (
         <>
-          {loading || activity === "generating" ? (
+          {loading || activity ? (
             <SessionActivityIndicator activity={activity} />
           ) : (
             <ActionIconButton

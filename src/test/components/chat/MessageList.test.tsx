@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderWithProviders } from "../../test/providers";
-import { JsonlRecord } from "../../types";
+import { renderWithProviders } from "../../providers";
+import { JsonlRecord } from "../../../types";
 
 vi.mock("@mantine/core", async () => {
   const actual = await vi.importActual<typeof import("@mantine/core")>("@mantine/core");
@@ -22,7 +22,7 @@ vi.mock("@mantine/core", async () => {
   };
 });
 
-import MessageList from "./MessageList";
+import MessageList from "../../../components/chat/MessageList";
 
 function makeMessages(count: number): JsonlRecord[] {
   return Array.from({ length: count }).map((_, index) => ({

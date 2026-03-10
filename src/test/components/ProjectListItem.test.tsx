@@ -1,8 +1,8 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import ProjectListItem from "./ProjectListItem";
-import { missingWorkspace, mockWorkspace } from "../test/fixtures";
-import { renderWithMantine } from "../test/render";
+import ProjectListItem from "../../components/ProjectListItem";
+import { missingWorkspace, mockWorkspace } from "../fixtures";
+import { renderWithMantine } from "../render";
 
 describe("ProjectListItem", () => {
   it("renders project metadata from mock workspace data", () => {

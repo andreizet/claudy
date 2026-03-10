@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { compareProjectRows, compareSessionRows, toggleSort } from "./usageDashboard";
-import { UsageProjectBreakdown, UsageSessionBreakdown } from "../types";
+import { compareProjectRows, compareSessionRows, toggleSort } from "../../shared/usageDashboard";
+import { UsageProjectBreakdown, UsageSessionBreakdown } from "../../types";
 
 const projectA: UsageProjectBreakdown = {
   project_path: "/tmp/a",

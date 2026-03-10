@@ -1,8 +1,8 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderWithProviders } from "./test/providers";
-import { mockWorkspace } from "./test/fixtures";
-import { DiscoveredWorkspace } from "./types";
+import { renderWithProviders } from "./providers";
+import { mockWorkspace } from "./fixtures";
+import { DiscoveredWorkspace } from "../types";
 
 const invokeMock = vi.fn();
 
@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
-vi.mock("./views/HomeView", () => ({
+vi.mock("../views/HomeView", () => ({
   default: ({
     workspaces,
     onOpenWorkspace,
@@ -35,7 +35,7 @@ vi.mock("./views/HomeView", () => ({
   ),
 }));
 
-vi.mock("./views/ChatView", () => ({
+vi.mock("../views/ChatView", () => ({
   default: ({
     workspace,
     onBack,
@@ -53,7 +53,7 @@ vi.mock("./views/ChatView", () => ({
   ),
 }));
 
-import App from "./App";
+import App from "../App";
 
 const workspaceA: DiscoveredWorkspace = mockWorkspace;
 const workspaceB: DiscoveredWorkspace = {
@@ -158,7 +158,7 @@ describe("App tab and session flow", () => {
     await waitFor(() => expect(screen.getByText("chat-backend")).toBeInTheDocument());
     expect(screen.getByText("backend - Investigate the API")).toBeInTheDocument();
     expect(screen.getByText("claudy - Implement the login flow")).toBeInTheDocument();
-    expect(screen.getByText("New")).toBeInTheDocument();
+    expect(screen.getByText("Projects")).toBeInTheDocument();
   });
 
   it("does not restore saved tabs when remember open tabs is disabled", async () => {

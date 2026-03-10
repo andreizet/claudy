@@ -1,8 +1,8 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderWithProviders } from "../test/providers";
-import { missingWorkspace, mockWorkspace } from "../test/fixtures";
-import HomeView from "./HomeView";
+import { renderWithProviders } from "../providers";
+import { missingWorkspace, mockWorkspace } from "../fixtures";
+import HomeView from "../../views/HomeView";
 
 const invokeMock = vi.fn();
 const openMock = vi.fn();
@@ -32,7 +32,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openMock(...args),
 }));
 
-vi.mock("./UsageDashboardView", () => ({
+vi.mock("../../views/UsageDashboardView", () => ({
   default: () => <div>usage-dashboard</div>,
 }));
 
@@ -163,11 +163,8 @@ describe("HomeView behavior", () => {
       />
     );
 
-    fireEvent.click(screen.getByText("Favorites"));
-    expect(screen.getByText("claudy")).toBeInTheDocument();
-    expect(screen.queryByText("backend")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByLabelText("Remove from favorites"));
+    expect(screen.getAllByText("claudy")).toHaveLength(2);
+    fireEvent.click(screen.getAllByLabelText("Remove from favorites")[0]);
     await waitFor(() =>
       expect(window.localStorage.getItem("claudy.favoriteWorkspaces")).toBe(JSON.stringify([]))
     );
@@ -190,11 +187,13 @@ describe("HomeView behavior", () => {
     expect(screen.getByText("backend")).toBeInTheDocument();
     expect(screen.queryByText("claudy")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Favorites"));
-    expect(screen.queryByText("backend")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Remove from favorites")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "" } });
+    expect(screen.getAllByLabelText("Remove from favorites")).toHaveLength(2);
   });
 
-  it("switches between usage, projects, and favorites nav", async () => {
+  it("switches between usage, projects, and settings nav", async () => {
     renderWithProviders(
       <HomeView
         workspaces={workspaces}
@@ -211,8 +210,8 @@ describe("HomeView behavior", () => {
     fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     expect(screen.getByText("claudy")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Favorites" }));
-    expect(screen.getByText("No favorites yet")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(screen.getByText("Claude Installation")).toBeInTheDocument());
   });
 
   it("uses folder picker result for New Session", async () => {

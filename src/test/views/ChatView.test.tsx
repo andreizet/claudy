@@ -21,9 +21,9 @@ vi.mock("@xterm/addon-fit", () => ({
   },
 }));
 
-import { SessionItem } from "./ChatView";
-import { mockSessions } from "../test/fixtures";
-import { renderWithMantine } from "../test/render";
+import { SessionItem } from "../../views/ChatView";
+import { mockSessions } from "../fixtures";
+import { renderWithMantine } from "../render";
 
 describe("SessionItem", () => {
   it("renders session label and relative time", () => {

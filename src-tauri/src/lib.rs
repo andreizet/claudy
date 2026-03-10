@@ -422,7 +422,9 @@ fn decode_project_path(encoded_dir_name: &str) -> (PathBuf, bool) {
 }
 
 fn path_contains_component(path: &Path, component: &str) -> bool {
-    path.components().any(|part| part.as_os_str().to_string_lossy().eq_ignore_ascii_case(component))
+    path.to_string_lossy()
+        .split(|ch| ch == '/' || ch == '\\')
+        .any(|part| part.eq_ignore_ascii_case(component))
 }
 
 // ─── Session reading ──────────────────────────────────────────────────────────

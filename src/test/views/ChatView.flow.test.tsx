@@ -1,8 +1,8 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderWithProviders } from "../test/providers";
-import { mockWorkspace } from "../test/fixtures";
-import { ClaudeAccountInfo, DiscoveredWorkspace } from "../types";
+import { renderWithProviders } from "../providers";
+import { mockWorkspace } from "../fixtures";
+import { ClaudeAccountInfo, DiscoveredWorkspace } from "../../types";
 
 const invokeMock = vi.fn();
 const listenMock = vi.fn();
@@ -35,7 +35,7 @@ vi.mock("@xterm/addon-fit", () => ({
   },
 }));
 
-vi.mock("../components/chat/MessageList", () => ({
+vi.mock("../../components/chat/MessageList", () => ({
   default: ({
     messages,
     streamMessages,
@@ -63,7 +63,7 @@ vi.mock("../components/chat/MessageList", () => ({
   ),
 }));
 
-import ChatView from "./ChatView";
+import ChatView from "../../views/ChatView";
 
 const accountInfo: ClaudeAccountInfo = {
   email: "awrcloud.app@caphyon.com",
