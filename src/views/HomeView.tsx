@@ -39,6 +39,30 @@ interface ClaudeSessionInit {
   mcp_servers: unknown;
 }
 
+interface InstalledSkill {
+  folder_name: string;
+  display_name: string;
+  description: string | null;
+  path: string;
+}
+
+interface SkillCatalogEntry {
+  id: string;
+  name: string;
+  description: string | null;
+  repo_label: string;
+  repo_url: string;
+  github_repo: string;
+  github_ref: string;
+  github_path: string;
+  destination_name: string;
+}
+
+interface SkillStatusMessage {
+  tone: "success" | "error";
+  message: string;
+}
+
 function loadFavoriteWorkspaces(): Set<string> {
   try {
     const raw = window.localStorage.getItem(FAVORITES_STORAGE_KEY);
@@ -49,6 +73,12 @@ function loadFavoriteWorkspaces(): Set<string> {
   } catch {
     return new Set();
   }
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  if (typeof error === "string" && error.trim()) return error;
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return fallback;
 }
 
 interface Props {
@@ -70,6 +100,15 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
   const [defaultToolState, setDefaultToolState] = useState<SessionToolState | null>(null);
   const [loadingDefaultTools, setLoadingDefaultTools] = useState(false);
   const [claudeInstallations, setClaudeInstallations] = useState<ClaudeInstallation[]>([]);
+  const [installedSkills, setInstalledSkills] = useState<InstalledSkill[]>([]);
+  const [loadingInstalledSkills, setLoadingInstalledSkills] = useState(false);
+  const [hasLoadedInstalledSkills, setHasLoadedInstalledSkills] = useState(false);
+  const [skillCatalog, setSkillCatalog] = useState<SkillCatalogEntry[]>([]);
+  const [loadingSkillCatalog, setLoadingSkillCatalog] = useState(false);
+  const [hasLoadedSkillCatalog, setHasLoadedSkillCatalog] = useState(false);
+  const [skillStatus, setSkillStatus] = useState<SkillStatusMessage | null>(null);
+  const [folderInstallInFlight, setFolderInstallInFlight] = useState(false);
+  const [busySkillId, setBusySkillId] = useState<string | null>(null);
 
   useEffect(() => {
     window.localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(Array.from(favorites)));
@@ -228,6 +267,102 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
       })
       .finally(() => setLoadingDefaultTools(false));
   }, [activeNav, settingsTab, defaultToolState, loadingDefaultTools, workspaces]);
+
+  useEffect(() => {
+    if (activeNav !== "settings" || settingsTab !== "skills" || loadingInstalledSkills || hasLoadedInstalledSkills) return;
+    setLoadingInstalledSkills(true);
+    invoke<InstalledSkill[]>("list_installed_skills")
+      .then((skills) => {
+        setInstalledSkills(skills);
+        setHasLoadedInstalledSkills(true);
+      })
+      .catch(() => {
+        setInstalledSkills([]);
+        setHasLoadedInstalledSkills(true);
+        setSkillStatus({ tone: "error", message: "Could not load installed Claude skills." });
+      })
+      .finally(() => setLoadingInstalledSkills(false));
+  }, [activeNav, settingsTab, loadingInstalledSkills, hasLoadedInstalledSkills]);
+
+  useEffect(() => {
+    if (activeNav !== "settings" || settingsTab !== "skills" || hasLoadedSkillCatalog || loadingSkillCatalog) return;
+    setLoadingSkillCatalog(true);
+    invoke<SkillCatalogEntry[]>("get_skill_catalog")
+      .then((skills) => {
+        setSkillCatalog(skills);
+        setHasLoadedSkillCatalog(true);
+      })
+      .catch(() => {
+        setSkillCatalog([]);
+        setHasLoadedSkillCatalog(true);
+        setSkillStatus({ tone: "error", message: "Could not load the installable skills catalog." });
+      })
+      .finally(() => setLoadingSkillCatalog(false));
+  }, [activeNav, settingsTab, hasLoadedSkillCatalog, loadingSkillCatalog]);
+
+  const refreshInstalledSkills = async () => {
+    setLoadingInstalledSkills(true);
+    try {
+      const skills = await invoke<InstalledSkill[]>("list_installed_skills");
+      setInstalledSkills(skills);
+      setHasLoadedInstalledSkills(true);
+    } catch {
+      setInstalledSkills([]);
+      setHasLoadedInstalledSkills(true);
+      throw new Error("Could not refresh installed skills.");
+    } finally {
+      setLoadingInstalledSkills(false);
+    }
+  };
+
+  const handleInstallSkillFolder = async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Choose skill folder",
+    });
+    if (typeof selected !== "string" || !selected) return;
+
+    setFolderInstallInFlight(true);
+    setSkillStatus(null);
+    try {
+      await invoke<InstalledSkill>("install_skill_from_folder", { folderPath: selected });
+      await refreshInstalledSkills();
+      setSkillStatus({ tone: "success", message: `Installed skill from ${selected}.` });
+    } catch (error) {
+      setSkillStatus({ tone: "error", message: errorMessage(error, "Could not install the selected skill folder.") });
+    } finally {
+      setFolderInstallInFlight(false);
+    }
+  };
+
+  const handleInstallCatalogSkill = async (skillId: string, skillName: string) => {
+    setBusySkillId(skillId);
+    setSkillStatus(null);
+    try {
+      await invoke<InstalledSkill>("install_catalog_skill", { skillId });
+      await refreshInstalledSkills();
+      setSkillStatus({ tone: "success", message: `Installed ${skillName}.` });
+    } catch (error) {
+      setSkillStatus({ tone: "error", message: errorMessage(error, `Could not install ${skillName}.`) });
+    } finally {
+      setBusySkillId(null);
+    }
+  };
+
+  const handleDeleteInstalledSkill = async (folderName: string, skillName: string) => {
+    setBusySkillId(folderName);
+    setSkillStatus(null);
+    try {
+      await invoke("delete_installed_skill", { folderName });
+      await refreshInstalledSkills();
+      setSkillStatus({ tone: "success", message: `Deleted ${skillName}.` });
+    } catch (error) {
+      setSkillStatus({ tone: "error", message: errorMessage(error, `Could not delete ${skillName}.`) });
+    } finally {
+      setBusySkillId(null);
+    }
+  };
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
@@ -476,6 +611,16 @@ export default function HomeView({ workspaces, isLoading, accountInfo, onOpenWor
                 return next;
               });
             }}
+            installedSkills={installedSkills}
+            loadingInstalledSkills={loadingInstalledSkills}
+            skillCatalog={skillCatalog}
+            loadingSkillCatalog={loadingSkillCatalog}
+            skillStatus={skillStatus}
+            folderInstallInFlight={folderInstallInFlight}
+            busySkillId={busySkillId}
+            onInstallSkillFolder={handleInstallSkillFolder}
+            onInstallCatalogSkill={handleInstallCatalogSkill}
+            onDeleteInstalledSkill={handleDeleteInstalledSkill}
           />
         ) : (
           <ScrollArea style={{ flex: 1 }}>
@@ -566,6 +711,16 @@ function SettingsView({
   onToggleDefaultTool,
   onEnableAllDefaultTools,
   onDisableAllDefaultTools,
+  installedSkills,
+  loadingInstalledSkills,
+  skillCatalog,
+  loadingSkillCatalog,
+  skillStatus,
+  folderInstallInFlight,
+  busySkillId,
+  onInstallSkillFolder,
+  onInstallCatalogSkill,
+  onDeleteInstalledSkill,
 }: {
   settingsTab: SettingsTab;
   onSettingsTabChange: (value: SettingsTab) => void;
@@ -577,9 +732,60 @@ function SettingsView({
   onToggleDefaultTool: (tool: string) => void;
   onEnableAllDefaultTools: () => void;
   onDisableAllDefaultTools: () => void;
+  installedSkills: InstalledSkill[];
+  loadingInstalledSkills: boolean;
+  skillCatalog: SkillCatalogEntry[];
+  loadingSkillCatalog: boolean;
+  skillStatus: SkillStatusMessage | null;
+  folderInstallInFlight: boolean;
+  busySkillId: string | null;
+  onInstallSkillFolder: () => Promise<void>;
+  onInstallCatalogSkill: (skillId: string, skillName: string) => Promise<void>;
+  onDeleteInstalledSkill: (folderName: string, skillName: string) => Promise<void>;
 }) {
   const { builtinTools, mcpGroups } = splitToolsBySource(defaultToolState?.availableTools ?? [], defaultToolState?.mcpServers ?? []);
   const [expandedMcpGroups, setExpandedMcpGroups] = useState<Set<string>>(() => new Set());
+  const [skillSearch, setSkillSearch] = useState("");
+  const [expandedSkillGroups, setExpandedSkillGroups] = useState<Set<string>>(() => new Set());
+  const catalogGroups = useMemo(() => {
+    const grouped = new Map<string, SkillCatalogEntry[]>();
+    for (const entry of skillCatalog) {
+      const current = grouped.get(entry.repo_label) ?? [];
+      current.push(entry);
+      grouped.set(entry.repo_label, current);
+    }
+    return Array.from(grouped.entries()).map(([repo, skills]) => ({
+      repo,
+      skills: skills.sort((a, b) => a.name.localeCompare(b.name)),
+    }));
+  }, [skillCatalog]);
+  const installedSkillFolders = useMemo(
+    () => new Set(installedSkills.map((skill) => skill.folder_name)),
+    [installedSkills]
+  );
+  const filteredCatalogGroups = useMemo(() => {
+    const query = skillSearch.trim().toLowerCase();
+    if (!query) return catalogGroups;
+    return catalogGroups
+      .map((group) => ({
+        ...group,
+        skills: group.skills.filter((skill) => {
+          const haystack = [
+            skill.name,
+            skill.description ?? "",
+            skill.repo_label,
+            skill.repo_url,
+          ].join(" ").toLowerCase();
+          return haystack.includes(query);
+        }),
+      }))
+      .filter((group) => group.skills.length > 0);
+  }, [catalogGroups, skillSearch]);
+
+  useEffect(() => {
+    if (catalogGroups.length === 0 || expandedSkillGroups.size > 0) return;
+    setExpandedSkillGroups(new Set(catalogGroups.map((group) => group.repo)));
+  }, [catalogGroups, expandedSkillGroups.size]);
 
   const toggleGroupTools = (tools: string[], checked: boolean) => {
     if (!tools.length) return;
@@ -751,7 +957,149 @@ function SettingsView({
               )}
             </Stack>
           ) : null}
-          {settingsTab === "skills" ? <EmptySettingsPanel label="Skills" /> : null}
+          {settingsTab === "skills" ? (
+            <Stack gap={16}>
+              {skillStatus ? (
+                <Box
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    border: `1px solid ${skillStatus.tone === "success" ? "#28583b" : "#5a262c"}`,
+                    background: skillStatus.tone === "success" ? "#102216" : "#261115",
+                  }}
+                >
+                  <Text size="sm" c={skillStatus.tone === "success" ? "#b7f7c7" : "#f6b7c0"}>{skillStatus.message}</Text>
+                </Box>
+              ) : null}
+              <SectionCard title="Installed Skills" description="Claude loads personal skills from ~/.claude/skills. Remove any skill directly from here.">
+                {loadingInstalledSkills ? (
+                  <Text size="sm" c="#a1a1aa">Loading installed skills…</Text>
+                ) : installedSkills.length === 0 ? (
+                  <Text size="sm" c="#71717a">No skills are installed yet.</Text>
+                ) : (
+                  <Stack gap={10}>
+                    {installedSkills.map((skill) => (
+                      <SkillRow
+                        key={skill.folder_name}
+                        title={skill.display_name}
+                        subtitle={skill.description ?? skill.path}
+                        meta={skill.folder_name}
+                        actionLabel={busySkillId === skill.folder_name ? "Deleting…" : "Delete"}
+                        actionDisabled={busySkillId !== null}
+                        onAction={() => void onDeleteInstalledSkill(skill.folder_name, skill.display_name)}
+                        destructive
+                      />
+                    ))}
+                  </Stack>
+                )}
+              </SectionCard>
+              <SectionCard title="Install From Folder" description="Choose a local skill folder that contains SKILL.md and copy it into Claude's skills directory.">
+                <Button
+                  size="sm"
+                  onClick={() => void onInstallSkillFolder()}
+                  loading={folderInstallInFlight}
+                  styles={{
+                    root: {
+                      background: "#f4f4f5",
+                      color: "#0c0c0f",
+                      border: "none",
+                      "&:hover": { background: "#e4e4e7" },
+                    },
+                  }}
+                >
+                  Select Skill Folder
+                </Button>
+              </SectionCard>
+              <SectionCard title="Installable Skills" description="Install curated skills grouped by their source repository.">
+                <TextInput
+                  aria-label="Search installable skills"
+                  placeholder="Search installable skills"
+                  value={skillSearch}
+                  onChange={(event) => setSkillSearch(event.currentTarget.value)}
+                  leftSection={<SearchIcon />}
+                  styles={{
+                    input: {
+                      background: "#121217",
+                      borderColor: "#2a2a32",
+                      color: "#f4f4f5",
+                    },
+                  }}
+                  mb={12}
+                />
+                {loadingSkillCatalog ? (
+                  <Text size="sm" c="#a1a1aa">Loading skill catalog…</Text>
+                ) : catalogGroups.length === 0 ? (
+                  <Text size="sm" c="#71717a">No installable skills are configured.</Text>
+                ) : filteredCatalogGroups.length === 0 ? (
+                  <Text size="sm" c="#71717a">No skills match this search.</Text>
+                ) : (
+                  <Stack gap={14}>
+                    {filteredCatalogGroups.map((group) => {
+                      const expanded = skillSearch.trim().length > 0 || expandedSkillGroups.has(group.repo);
+                      return (
+                        <Box
+                          key={group.repo}
+                          style={{
+                            borderRadius: 12,
+                            overflow: "hidden",
+                            border: "1px solid #23232a",
+                            background: "#0d0d11",
+                          }}
+                        >
+                          <UnstyledButton
+                            onClick={() => setExpandedSkillGroups((current) => {
+                              const next = new Set(current);
+                              if (next.has(group.repo)) next.delete(group.repo);
+                              else next.add(group.repo);
+                              return next;
+                            })}
+                            style={{
+                              width: "100%",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              padding: "10px 12px",
+                              background: "#121217",
+                              borderBottom: expanded ? "1px solid #23232a" : "none",
+                            }}
+                            aria-label={`${expanded ? "Collapse" : "Expand"} ${group.repo}`}
+                          >
+                            <Text size="xs" fw={700} c="#e4e4e7">{group.repo} ({group.skills.length})</Text>
+                            <ChevronDown
+                              size={14}
+                              strokeWidth={2}
+                              style={{ color: "#8b8b96", transform: expanded ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 180ms ease" }}
+                            />
+                          </UnstyledButton>
+                          {expanded ? (
+                            <Stack gap={0}>
+                              {group.skills.map((skill, index) => {
+                                const isInstalled = installedSkillFolders.has(skill.destination_name);
+                                const isBusy = busySkillId === skill.id;
+                                return (
+                                  <SkillRow
+                                    key={skill.id}
+                                    title={skill.name}
+                                    subtitle={skill.description ?? skill.repo_url}
+                                    meta={skill.repo_url}
+                                    actionLabel={isInstalled ? "Installed" : isBusy ? "Installing…" : "Install"}
+                                    actionDisabled={isInstalled || busySkillId !== null}
+                                    onAction={() => void onInstallCatalogSkill(skill.id, skill.name)}
+                                    grouped
+                                    firstInGroup={index === 0}
+                                  />
+                                );
+                              })}
+                            </Stack>
+                          ) : null}
+                        </Box>
+                      );
+                    })}
+                  </Stack>
+                )}
+              </SectionCard>
+            </Stack>
+          ) : null}
           {settingsTab === "hooks" ? <EmptySettingsPanel label="Hooks" /> : null}
         </Box>
       </ScrollArea>
@@ -948,6 +1296,66 @@ function GroupToggleCheckbox({
       />
       <Text size="xs" fw={600} c="#a1a1aa">{label}</Text>
     </label>
+  );
+}
+
+function SkillRow({
+  title,
+  subtitle,
+  meta,
+  actionLabel,
+  actionDisabled,
+  onAction,
+  destructive,
+  grouped,
+  firstInGroup,
+}: {
+  title: string;
+  subtitle: string;
+  meta: string;
+  actionLabel: string;
+  actionDisabled: boolean;
+  onAction: () => void;
+  destructive?: boolean;
+  grouped?: boolean;
+  firstInGroup?: boolean;
+}) {
+  return (
+    <Box
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "12px 14px",
+        borderRadius: grouped ? 0 : 12,
+        border: grouped ? "none" : "1px solid #23232a",
+        borderTop: grouped && !firstInGroup ? "1px solid #1a1a22" : "none",
+        background: grouped ? "transparent" : "#0d0d11",
+      }}
+    >
+      <Box style={{ minWidth: 0, flex: 1 }}>
+        <Text size="sm" fw={600} c="#f4f4f5">{title}</Text>
+        <Text size="xs" c="#8b8b96" mt={4} style={{ wordBreak: "break-word" }}>{subtitle}</Text>
+        <Text size="xs" c="#5f5f69" mt={6} style={{ wordBreak: "break-word" }}>{meta}</Text>
+      </Box>
+      <Button
+        size="xs"
+        variant="default"
+        onClick={onAction}
+        disabled={actionDisabled}
+        styles={{
+          root: {
+            background: destructive ? "#2a1115" : "#18181b",
+            borderColor: destructive ? "#5a262c" : "#2a2a32",
+            color: destructive ? "#f6b7c0" : "#e4e4e7",
+            minWidth: 88,
+          },
+        }}
+      >
+        {actionLabel}
+      </Button>
+    </Box>
   );
 }
 

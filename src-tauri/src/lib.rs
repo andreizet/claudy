@@ -175,6 +175,27 @@ pub struct SlashCommandInfo {
     pub source: String,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InstalledSkill {
+    pub folder_name: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub path: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SkillCatalogEntry {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub repo_label: String,
+    pub repo_url: String,
+    pub github_repo: String,
+    pub github_ref: String,
+    pub github_path: String,
+    pub destination_name: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct ClaudeSessionInit {
     pub session_id: Option<String>,
@@ -1682,6 +1703,395 @@ fn collect_custom_slash_commands(
     }
 }
 
+fn claude_skills_dir() -> Result<PathBuf, String> {
+    let home = dirs_next::home_dir().ok_or_else(|| "Home directory is not available".to_string())?;
+    Ok(home.join(".claude").join("skills"))
+}
+
+fn inspect_skill_dir(path: &Path) -> Result<InstalledSkill, String> {
+    let folder_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Invalid skill directory name".to_string())?
+        .to_string();
+    let skill_file = path.join("SKILL.md");
+    let raw = fs::read_to_string(&skill_file)
+        .map_err(|_| format!("{} is missing SKILL.md", path.display()))?;
+    let frontmatter = extract_frontmatter(&raw).unwrap_or("");
+    let display_name = parse_frontmatter_value(frontmatter, "name").unwrap_or_else(|| folder_name.clone());
+    Ok(InstalledSkill {
+        folder_name,
+        display_name,
+        description: parse_frontmatter_value(frontmatter, "description"),
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|e| e.to_string())?;
+
+    for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+
+        if file_type.is_dir() {
+            if entry.file_name().to_str() == Some(".git") {
+                continue;
+            }
+            copy_dir_recursive(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &destination_path).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
+fn run_command(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+
+    let output = cmd.output().map_err(|e| format!("Failed to run {program}: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("{program} exited with {}", output.status)
+    };
+    Err(detail)
+}
+
+fn copy_skill_into_claude_dir(source_dir: &Path, destination_name: &str) -> Result<InstalledSkill, String> {
+    let skill_file = source_dir.join("SKILL.md");
+    if !skill_file.exists() {
+        return Err("Selected folder does not contain SKILL.md".to_string());
+    }
+
+    let skills_root = claude_skills_dir()?;
+    fs::create_dir_all(&skills_root).map_err(|e| e.to_string())?;
+    let destination = skills_root.join(destination_name);
+    if destination.exists() {
+        return Err(format!("Skill \"{destination_name}\" is already installed"));
+    }
+
+    copy_dir_recursive(source_dir, &destination)?;
+    inspect_skill_dir(&destination)
+}
+
+fn install_catalog_skill_into_claude_dir(entry: &SkillCatalogEntry) -> Result<InstalledSkill, String> {
+    let temp_root = std::env::temp_dir().join(format!(
+        "claudy-skill-{}-{}",
+        entry.id,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    ));
+
+    let result = (|| {
+        let repo_url = format!("https://github.com/{}.git", entry.github_repo);
+        let temp_root_str = temp_root.to_string_lossy().to_string();
+        run_command(
+            "git",
+            &["clone", "--depth", "1", "--branch", &entry.github_ref, "--filter=blob:none", "--sparse", &repo_url, &temp_root_str],
+            None,
+        )?;
+
+        let source_dir = if entry.github_path.trim().is_empty() {
+            temp_root.clone()
+        } else {
+            run_command("git", &["sparse-checkout", "set", "--no-cone", &entry.github_path], Some(&temp_root))?;
+            temp_root.join(&entry.github_path)
+        };
+
+        if !source_dir.exists() {
+            return Err(format!("Skill source {} was not found in {}", entry.github_path, entry.github_repo));
+        }
+
+        copy_skill_into_claude_dir(&source_dir, &entry.destination_name)
+    })();
+
+    if temp_root.exists() {
+        let _ = fs::remove_dir_all(&temp_root);
+    }
+
+    result
+}
+
+fn skill_catalog() -> Vec<SkillCatalogEntry> {
+    vec![
+        SkillCatalogEntry {
+            id: "anthropics-algorithmic-art".to_string(),
+            name: "algorithmic-art".to_string(),
+            description: Some("Generative and algorithmic art workflows.".to_string()),
+            repo_label: "anthropics/skills".to_string(),
+            repo_url: "https://github.com/anthropics/skills/tree/main/skills".to_string(),
+            github_repo: "anthropics/skills".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/algorithmic-art".to_string(),
+            destination_name: "algorithmic-art".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "anthropics-frontend-design".to_string(),
+            name: "frontend-design".to_string(),
+            description: Some("UI and interaction design guidance.".to_string()),
+            repo_label: "anthropics/skills".to_string(),
+            repo_url: "https://github.com/anthropics/skills/tree/main/skills".to_string(),
+            github_repo: "anthropics/skills".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/frontend-design".to_string(),
+            destination_name: "frontend-design".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "anthropics-mcp-builder".to_string(),
+            name: "mcp-builder".to_string(),
+            description: Some("Build and package MCP servers.".to_string()),
+            repo_label: "anthropics/skills".to_string(),
+            repo_url: "https://github.com/anthropics/skills/tree/main/skills".to_string(),
+            github_repo: "anthropics/skills".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/mcp-builder".to_string(),
+            destination_name: "mcp-builder".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "anthropics-web-artifacts-builder".to_string(),
+            name: "web-artifacts-builder".to_string(),
+            description: Some("Create standalone HTML artifacts.".to_string()),
+            repo_label: "anthropics/skills".to_string(),
+            repo_url: "https://github.com/anthropics/skills/tree/main/skills".to_string(),
+            github_repo: "anthropics/skills".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/web-artifacts-builder".to_string(),
+            destination_name: "web-artifacts-builder".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "anthropics-webapp-testing".to_string(),
+            name: "webapp-testing".to_string(),
+            description: Some("Test browser workflows and regressions.".to_string()),
+            repo_label: "anthropics/skills".to_string(),
+            repo_url: "https://github.com/anthropics/skills/tree/main/skills".to_string(),
+            github_repo: "anthropics/skills".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/webapp-testing".to_string(),
+            destination_name: "webapp-testing".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "obra-brainstorming".to_string(),
+            name: "brainstorming".to_string(),
+            description: Some("Generate and refine solution options.".to_string()),
+            repo_label: "obra/superpowers".to_string(),
+            repo_url: "https://github.com/obra/superpowers/tree/main/skills".to_string(),
+            github_repo: "obra/superpowers".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/brainstorming".to_string(),
+            destination_name: "brainstorming".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "obra-complex-problem-solving".to_string(),
+            name: "complex-problem-solving".to_string(),
+            description: Some("Structure and solve harder engineering tasks.".to_string()),
+            repo_label: "obra/superpowers".to_string(),
+            repo_url: "https://github.com/obra/superpowers/tree/main/skills".to_string(),
+            github_repo: "obra/superpowers".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/complex-problem-solving".to_string(),
+            destination_name: "complex-problem-solving".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "obra-systematic-debugging".to_string(),
+            name: "systematic-debugging".to_string(),
+            description: Some("Debug issues with repeatable investigation steps.".to_string()),
+            repo_label: "obra/superpowers".to_string(),
+            repo_url: "https://github.com/obra/superpowers/tree/main/skills".to_string(),
+            github_repo: "obra/superpowers".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/systematic-debugging".to_string(),
+            destination_name: "systematic-debugging".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "obra-test-driven-development".to_string(),
+            name: "test-driven-development".to_string(),
+            description: Some("Drive implementation from tests.".to_string()),
+            repo_label: "obra/superpowers".to_string(),
+            repo_url: "https://github.com/obra/superpowers/tree/main/skills".to_string(),
+            github_repo: "obra/superpowers".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/test-driven-development".to_string(),
+            destination_name: "test-driven-development".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "obra-verification-before-completion".to_string(),
+            name: "verification-before-completion".to_string(),
+            description: Some("Validate changes before marking work done.".to_string()),
+            repo_label: "obra/superpowers".to_string(),
+            repo_url: "https://github.com/obra/superpowers/tree/main/skills".to_string(),
+            github_repo: "obra/superpowers".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/verification-before-completion".to_string(),
+            destination_name: "verification-before-completion".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "kdense-astropy".to_string(),
+            name: "astropy".to_string(),
+            description: Some("Astropy-based astronomy workflows.".to_string()),
+            repo_label: "K-Dense-AI/claude-scientific-skills".to_string(),
+            repo_url: "https://github.com/K-Dense-AI/claude-scientific-skills/tree/main/scientific-skills".to_string(),
+            github_repo: "K-Dense-AI/claude-scientific-skills".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "scientific-skills/astropy".to_string(),
+            destination_name: "astropy".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "kdense-biopython".to_string(),
+            name: "biopython".to_string(),
+            description: Some("Bioinformatics workflows with Biopython.".to_string()),
+            repo_label: "K-Dense-AI/claude-scientific-skills".to_string(),
+            repo_url: "https://github.com/K-Dense-AI/claude-scientific-skills/tree/main/scientific-skills".to_string(),
+            github_repo: "K-Dense-AI/claude-scientific-skills".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "scientific-skills/biopython".to_string(),
+            destination_name: "biopython".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "kdense-deepchem".to_string(),
+            name: "deepchem".to_string(),
+            description: Some("DeepChem workflows for cheminformatics.".to_string()),
+            repo_label: "K-Dense-AI/claude-scientific-skills".to_string(),
+            repo_url: "https://github.com/K-Dense-AI/claude-scientific-skills/tree/main/scientific-skills".to_string(),
+            github_repo: "K-Dense-AI/claude-scientific-skills".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "scientific-skills/deepchem".to_string(),
+            destination_name: "deepchem".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "kdense-exploratory-data-analysis".to_string(),
+            name: "exploratory-data-analysis".to_string(),
+            description: Some("Explore and summarize scientific data.".to_string()),
+            repo_label: "K-Dense-AI/claude-scientific-skills".to_string(),
+            repo_url: "https://github.com/K-Dense-AI/claude-scientific-skills/tree/main/scientific-skills".to_string(),
+            github_repo: "K-Dense-AI/claude-scientific-skills".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "scientific-skills/exploratory-data-analysis".to_string(),
+            destination_name: "exploratory-data-analysis".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "kdense-fred-economic-data".to_string(),
+            name: "fred-economic-data".to_string(),
+            description: Some("Analyze FRED economic series.".to_string()),
+            repo_label: "K-Dense-AI/claude-scientific-skills".to_string(),
+            repo_url: "https://github.com/K-Dense-AI/claude-scientific-skills/tree/main/scientific-skills".to_string(),
+            github_repo: "K-Dense-AI/claude-scientific-skills".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "scientific-skills/fred-economic-data".to_string(),
+            destination_name: "fred-economic-data".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "chrisvoncsefalvay-claude-d3js-skill".to_string(),
+            name: "claude-d3js-skill".to_string(),
+            description: Some("D3.js charting and visualization workflows.".to_string()),
+            repo_label: "chrisvoncsefalvay/claude-d3js-skill".to_string(),
+            repo_url: "https://github.com/chrisvoncsefalvay/claude-d3js-skill".to_string(),
+            github_repo: "chrisvoncsefalvay/claude-d3js-skill".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "".to_string(),
+            destination_name: "claude-d3js-skill".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "lackeyjb-playwright-skill".to_string(),
+            name: "playwright-skill".to_string(),
+            description: Some("Playwright testing workflows for Claude.".to_string()),
+            repo_label: "lackeyjb/playwright-skill".to_string(),
+            repo_url: "https://github.com/lackeyjb/playwright-skill/tree/main/skills/playwright-skill".to_string(),
+            github_repo: "lackeyjb/playwright-skill".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/playwright-skill".to_string(),
+            destination_name: "playwright-skill".to_string(),
+        },
+        SkillCatalogEntry {
+            id: "alonw0-web-asset-generator".to_string(),
+            name: "web-asset-generator".to_string(),
+            description: Some("Generate production-ready web assets.".to_string()),
+            repo_label: "alonw0/web-asset-generator".to_string(),
+            repo_url: "https://github.com/alonw0/web-asset-generator/tree/main/skills/web-asset-generator".to_string(),
+            github_repo: "alonw0/web-asset-generator".to_string(),
+            github_ref: "main".to_string(),
+            github_path: "skills/web-asset-generator".to_string(),
+            destination_name: "web-asset-generator".to_string(),
+        },
+    ]
+}
+
+#[tauri::command]
+fn list_installed_skills() -> Result<Vec<InstalledSkill>, String> {
+    let skills_root = claude_skills_dir()?;
+    if !skills_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut skills = Vec::new();
+    for entry in fs::read_dir(&skills_root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if !path.is_dir() || !path.join("SKILL.md").exists() {
+            continue;
+        }
+        if let Ok(skill) = inspect_skill_dir(&path) {
+            skills.push(skill);
+        }
+    }
+
+    skills.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+    Ok(skills)
+}
+
+#[tauri::command]
+fn get_skill_catalog() -> Vec<SkillCatalogEntry> {
+    skill_catalog()
+}
+
+#[tauri::command]
+fn install_skill_from_folder(folder_path: String) -> Result<InstalledSkill, String> {
+    let source_dir = PathBuf::from(&folder_path);
+    copy_skill_into_claude_dir(&source_dir, Path::new(&folder_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Invalid skill folder".to_string())?)
+}
+
+#[tauri::command]
+fn install_catalog_skill(skill_id: String) -> Result<InstalledSkill, String> {
+    let entry = skill_catalog()
+        .into_iter()
+        .find(|item| item.id == skill_id)
+        .ok_or_else(|| "Unknown catalog skill".to_string())?;
+    install_catalog_skill_into_claude_dir(&entry)
+}
+
+#[tauri::command]
+fn delete_installed_skill(folder_name: String) -> Result<(), String> {
+    if folder_name.trim().is_empty() || folder_name.contains('/') || folder_name.contains('\\') {
+        return Err("Invalid skill name".to_string());
+    }
+
+    let path = claude_skills_dir()?.join(folder_name);
+    if !path.exists() {
+        return Ok(());
+    }
+    fs::remove_dir_all(path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_workspace_files(workspace_path: String) -> Vec<String> {
     let workspace = PathBuf::from(workspace_path);
@@ -2091,6 +2501,11 @@ pub fn run() {
             get_claude_session_init,
             get_claude_plan_usage,
             get_usage_dashboard,
+            list_installed_skills,
+            get_skill_catalog,
+            install_skill_from_folder,
+            install_catalog_skill,
+            delete_installed_skill,
             get_workspace_favicon,
             get_workspace_files,
             get_workspace_slash_commands,
