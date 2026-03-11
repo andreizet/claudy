@@ -15,22 +15,28 @@ vi.mock("../views/HomeView", () => ({
     workspaces,
     onOpenWorkspace,
     onCreateSession,
+    onViewLabelChange,
+    initialViewLabel,
     mainHeader,
   }: {
     workspaces: DiscoveredWorkspace[];
     onOpenWorkspace: (workspace: DiscoveredWorkspace) => void;
     onCreateSession: (workspacePath: string) => void;
+    onViewLabelChange?: (viewLabel: "Projects" | "Usage" | "Settings") => void;
+    initialViewLabel?: "Projects" | "Usage" | "Settings";
     mainHeader?: React.ReactNode;
   }) => (
     <div>
       <div data-testid="home-header">{mainHeader}</div>
       <div>home-view</div>
+      <div>home-view-label:{initialViewLabel ?? "Projects"}</div>
       {workspaces.map((workspace) => (
         <button key={workspace.encoded_name} onClick={() => onOpenWorkspace(workspace)}>
           open-{workspace.display_name}
         </button>
       ))}
       <button onClick={() => onCreateSession("/picked/project")}>create-session</button>
+      <button onClick={() => onViewLabelChange?.("Settings")}>view-settings</button>
     </div>
   ),
 }));
@@ -244,5 +250,24 @@ describe("App tab and session flow", () => {
 
     fireEvent.click(screen.getAllByText("claudy - Implement the login flow")[1]);
     await waitFor(() => expect(screen.getByText("selected-session:session-beta")).toBeInTheDocument());
+  });
+
+  it("restores the settings home tab when switching back to it", async () => {
+    renderWithProviders(<App />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-claudy" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-claudy" }));
+    await waitFor(() => expect(screen.getByText("chat-claudy")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle("New tab"));
+    await waitFor(() => expect(screen.getByText("home-view")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "view-settings" }));
+    expect(screen.getByText("home-view-label:Settings")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("claudy - Implement the login flow"));
+    await waitFor(() => expect(screen.getByText("chat-claudy")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText("Settings"));
+    await waitFor(() => expect(screen.getByText("home-view-label:Settings")).toBeInTheDocument());
   });
 });

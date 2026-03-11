@@ -8,12 +8,14 @@ export interface AppSettings {
   rememberOpenTabs: boolean;
   theme: ThemePreference;
   selectedClaudeInstallation: string | null;
+  yoloMode: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   rememberOpenTabs: true,
   theme: "dark",
   selectedClaudeInstallation: null,
+  yoloMode: false,
 };
 
 export function loadAppSettings(): AppSettings {
@@ -29,6 +31,9 @@ export function loadAppSettings(): AppSettings {
       selectedClaudeInstallation: typeof parsed.selectedClaudeInstallation === "string" && parsed.selectedClaudeInstallation.trim()
         ? parsed.selectedClaudeInstallation
         : DEFAULT_APP_SETTINGS.selectedClaudeInstallation,
+      yoloMode: typeof parsed.yoloMode === "boolean"
+        ? parsed.yoloMode
+        : DEFAULT_APP_SETTINGS.yoloMode,
     };
   } catch {
     return DEFAULT_APP_SETTINGS;

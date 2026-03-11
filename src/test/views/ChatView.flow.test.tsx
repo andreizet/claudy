@@ -171,6 +171,8 @@ describe("ChatView core message flow", () => {
   });
 
   it("normal send uses send_message", async () => {
+    window.localStorage.setItem("claudy.appSettings", JSON.stringify({ yoloMode: true }));
+
     invokeMock.mockImplementation((command: string) => {
       switch (command) {
         case "get_claude_session_init":
@@ -207,6 +209,7 @@ describe("ChatView core message flow", () => {
       expect(invokeMock).toHaveBeenCalledWith("send_message", expect.objectContaining({
         sessionId: mockWorkspace.sessions[0].id,
         message: "continue this",
+        yoloMode: true,
       }));
     });
   });
@@ -246,6 +249,8 @@ describe("ChatView core message flow", () => {
   });
 
   it("slash command opens interactive overlay instead of normal send", async () => {
+    window.localStorage.setItem("claudy.appSettings", JSON.stringify({ yoloMode: true }));
+
     invokeMock.mockImplementation((command: string) => {
       switch (command) {
         case "get_claude_session_init":
@@ -280,6 +285,7 @@ describe("ChatView core message flow", () => {
       expect(invokeMock).toHaveBeenCalledWith("start_interactive_command", {
         workspacePath: mockWorkspace.decoded_path,
         initialInput: "/help",
+        yoloMode: true,
       });
     });
     expect(invokeMock).not.toHaveBeenCalledWith("send_message", expect.anything());

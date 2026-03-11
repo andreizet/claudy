@@ -539,6 +539,7 @@ export default function App() {
         isLoading={isLoading}
         accountInfo={accountInfo}
         mainHeader={tabHeader}
+        initialViewLabel={activeTab.viewLabel}
         onViewLabelChange={(viewLabel) => updateHomeTabLabel(activeTab.id, viewLabel)}
         onOpenWorkspace={replaceActiveTabWithWorkspace}
         onCreateSession={(workspacePath) => void handleCreateSession(workspacePath, true)}

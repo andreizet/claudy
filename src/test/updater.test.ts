@@ -29,10 +29,11 @@ vi.mock("@mantine/notifications", () => ({
   },
 }));
 
-import { checkForAppUpdatesOnStartup } from "../updater";
+import { checkForAppUpdatesOnStartup, resetStartupUpdateCheckForTests } from "../updater";
 
 describe("checkForAppUpdatesOnStartup", () => {
   beforeEach(() => {
+    resetStartupUpdateCheckForTests();
     checkMock.mockReset();
     relaunchMock.mockReset();
     downloadAndInstallMock.mockReset();
@@ -79,5 +80,21 @@ describe("checkForAppUpdatesOnStartup", () => {
     expect(downloadAndInstallMock).not.toHaveBeenCalled();
     expect(relaunchMock).not.toHaveBeenCalled();
     expect(notificationsShowMock).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates repeated startup checks", async () => {
+    checkMock.mockRejectedValue(new Error("network down"));
+
+    await Promise.all([
+      checkForAppUpdatesOnStartup(),
+      checkForAppUpdatesOnStartup(),
+    ]);
+
+    expect(checkMock).toHaveBeenCalledTimes(1);
+    expect(notificationsShowMock).toHaveBeenCalledTimes(1);
+    expect(notificationsShowMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Update check failed",
+      message: "network down",
+    }));
   });
 });

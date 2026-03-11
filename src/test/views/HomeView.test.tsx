@@ -250,11 +250,15 @@ describe("HomeView behavior", () => {
     expect(screen.getByText("Claude Installation")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Claude Installation" })).toBeInTheDocument();
     expect(screen.getByText("Remember Open Tabs")).toBeInTheDocument();
+    expect(screen.getByText("YOLO Mode")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("switch", { name: "Enabled" }));
+    const switches = screen.getAllByRole("switch");
+    fireEvent.click(switches[0]);
+    fireEvent.click(switches[1]);
 
     await waitFor(() => {
       expect(window.localStorage.getItem("claudy.appSettings")).toContain("\"rememberOpenTabs\":false");
+      expect(window.localStorage.getItem("claudy.appSettings")).toContain("\"yoloMode\":true");
     });
   });
 

@@ -89,6 +89,7 @@ interface Props {
   onOpenWorkspace: (workspace: DiscoveredWorkspace) => void;
   onCreateSession: (workspacePath: string) => void;
   onViewLabelChange?: (label: "Projects" | "Usage" | "Settings") => void;
+  initialViewLabel?: "Projects" | "Usage" | "Settings";
   mainHeader?: React.ReactNode;
 }
 
@@ -99,9 +100,16 @@ export default function HomeView({
   onOpenWorkspace,
   onCreateSession,
   onViewLabelChange,
+  initialViewLabel = "Projects",
   mainHeader,
 }: Props) {
-  const [activeNav, setActiveNav] = useState<NavItem>("projects");
+  const [activeNav, setActiveNav] = useState<NavItem>(
+    initialViewLabel === "Usage"
+      ? "usage"
+      : initialViewLabel === "Settings"
+        ? "settings"
+        : "projects"
+  );
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [search, setSearch] = useState("");
   const [projectSort, setProjectSort] = useState<"recent" | "name" | "sessions">("recent");
@@ -158,6 +166,19 @@ export default function HomeView({
           : "Projects"
     );
   }, [activeNav, onViewLabelChange]);
+
+  useEffect(() => {
+    setActiveNav(
+      initialViewLabel === "Usage"
+        ? "usage"
+        : initialViewLabel === "Settings"
+          ? "settings"
+          : "projects"
+    );
+    if (initialViewLabel !== "Settings") {
+      setSettingsTab("general");
+    }
+  }, [initialViewLabel]);
 
   useEffect(() => {
     getVersion()
@@ -990,6 +1011,24 @@ function SettingsView({
                   color="#FFE100"
                 />
               </SectionCard>
+              <SectionCard
+                title="YOLO Mode"
+                description="Skips Claude's permission prompts and launches sessions with the dangerous skip-permissions flag. Only enable this if you want Claude to execute without asking for approval first."
+                background="#221b00"
+                borderColor="#5c4700"
+                titleColor="#fff4b5"
+                descriptionColor="#e6d37a"
+              >
+                <Switch
+                  checked={appSettings.yoloMode}
+                  onChange={(event) => onAppSettingsChange((current) => ({
+                    ...current,
+                    yoloMode: event.currentTarget.checked,
+                  }))}
+                  label={appSettings.yoloMode ? "Enabled" : "Disabled"}
+                  color="#FFE100"
+                />
+              </SectionCard>
             </Stack>
           ) : null}
           {settingsTab === "permissions" ? (
@@ -1239,22 +1278,33 @@ function SectionCard({
   title,
   description,
   children,
+  accentColor,
+  background,
+  borderColor,
+  titleColor,
+  descriptionColor,
 }: {
   title: string;
   description: string;
   children: React.ReactNode;
+  accentColor?: string;
+  background?: string;
+  borderColor?: string;
+  titleColor?: string;
+  descriptionColor?: string;
 }) {
   return (
     <Box
       style={{
         padding: 16,
         borderRadius: 14,
-        background: "#111115",
-        border: "1px solid #23232a",
+        background: background ?? "#111115",
+        border: `1px solid ${borderColor ?? "#23232a"}`,
+        boxShadow: accentColor ? `inset 3px 0 0 ${accentColor}` : undefined,
       }}
     >
-      <Text size="sm" fw={600} c="#f4f4f5">{title}</Text>
-      <Text size="xs" c="#71717a" mt={4} mb={12}>{description}</Text>
+      <Text size="sm" fw={600} c={titleColor ?? "#f4f4f5"}>{title}</Text>
+      <Text size="xs" c={descriptionColor ?? "#71717a"} mt={4} mb={12}>{description}</Text>
       {children}
     </Box>
   );

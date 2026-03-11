@@ -24,6 +24,7 @@ import { ClaudeAccountInfo, ContentBlock, ContentBlockToolUse, DiscoveredWorkspa
 import MessageList from "../components/chat/MessageList";
 import FileReferenceBadge from "../components/chat/FileReferenceBadge";
 import { md5 } from "../shared/md5";
+import { loadAppSettings } from "../shared/settings";
 import {
   extractMcpServers,
   loadDefaultToolPolicy,
@@ -736,6 +737,7 @@ export default function ChatView({
         [activeSession.id]: "generating",
       }));
     }
+    const yoloMode = loadAppSettings().yoloMode;
     const command = activeSession
       ? invoke("send_message", {
           sessionId: activeSession.id,
@@ -744,6 +746,7 @@ export default function ChatView({
           model,
           effort,
           allowedTools: effectiveAllowedTools,
+          yoloMode,
         })
       : (() => {
           setCreatingInitialSession(true);
@@ -753,6 +756,7 @@ export default function ChatView({
             model,
             effort,
             allowedTools: effectiveAllowedTools,
+            yoloMode,
           });
         })();
     command.catch((e) => {
@@ -1340,9 +1344,11 @@ export default function ChatView({
     setInteractiveStarting(true);
     setInteractiveOutput("");
     try {
+      const yoloMode = loadAppSettings().yoloMode;
       const sessionId = await invoke<string>("start_interactive_command", {
         workspacePath: workspace.decoded_path,
         initialInput: commandText,
+        yoloMode,
       });
       setInteractiveSessionId(sessionId);
     } catch (error) {

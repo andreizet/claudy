@@ -2242,6 +2242,7 @@ fn start_interactive_command(
     store: State<InteractiveSessionStore>,
     workspace_path: String,
     initial_input: Option<String>,
+    yolo_mode: Option<bool>,
 ) -> Result<String, String> {
     let cwd = PathBuf::from(&workspace_path);
     if !cwd.exists() || !cwd.is_dir() {
@@ -2258,6 +2259,9 @@ fn start_interactive_command(
     let mut cmd = CommandBuilder::new(&claude_bin);
     cmd.cwd(&cwd);
     cmd.env("PATH", &full_path);
+    if yolo_mode.unwrap_or(false) {
+        cmd.arg("--dangerously-skip-permissions");
+    }
 
     let child = pty_pair
         .slave
@@ -2437,15 +2441,22 @@ fn spawn_claude_message(
     model: String,
     effort: String,
     allowed_tools: Option<Vec<String>>,
+    yolo_mode: Option<bool>,
 ) -> Result<(), String> {
     std::thread::spawn(move || {
         let (claude_bin, full_path) = claude_binary_and_path();
+        let yolo_mode = yolo_mode.unwrap_or(false);
 
         eprintln!("[send_message] claude={} cwd={} session={:?}", claude_bin, cwd, session_id);
         eprintln!(
-            "[claude command] {} -p \"{}\" --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk{}{}{}{}",
+            "[claude command] {} -p \"{}\" --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk{}{}{}{}{}",
             claude_bin,
             escape_for_log(&message, 500),
+            if yolo_mode {
+                " --dangerously-skip-permissions".to_string()
+            } else {
+                String::new()
+            },
             allowed_tools
                 .as_ref()
                 .filter(|tools| !tools.is_empty())
@@ -2477,6 +2488,10 @@ fn spawn_claude_message(
            .stdout(std::process::Stdio::piped())
            .stderr(std::process::Stdio::piped())
            .env("PATH", &full_path);
+
+        if yolo_mode {
+            cmd.arg("--dangerously-skip-permissions");
+        }
 
         if let Some(tools) = allowed_tools.as_ref().filter(|tools| !tools.is_empty()) {
             cmd.arg("--allowedTools").arg(tools.join(","));
@@ -2540,6 +2555,7 @@ fn send_message(
     model: String,
     effort: String,
     allowed_tools: Option<Vec<String>>,
+    yolo_mode: Option<bool>,
 ) -> Result<(), String> {
     spawn_claude_message(
         app,
@@ -2549,6 +2565,7 @@ fn send_message(
         model,
         effort,
         allowed_tools,
+        yolo_mode,
     )
 }
 
@@ -2560,6 +2577,7 @@ fn send_new_message(
     model: String,
     effort: String,
     allowed_tools: Option<Vec<String>>,
+    yolo_mode: Option<bool>,
 ) -> Result<(), String> {
     spawn_claude_message(
         app,
@@ -2569,6 +2587,7 @@ fn send_new_message(
         model,
         effort,
         allowed_tools,
+        yolo_mode,
     )
 }
 
