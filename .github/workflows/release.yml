@@ -65,15 +65,19 @@ jobs:
         include:
           - name: macOS Apple Silicon
             platform: macos-latest
+            target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin
           - name: macOS Intel
             platform: macos-latest
+            target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin
           - name: Linux x64
             platform: ubuntu-22.04
+            target: ""
             args: ""
           - name: Windows x64
             platform: windows-latest
+            target: ""
             args: ""
     runs-on: ${{ matrix.platform }}
     steps:
@@ -90,8 +94,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install additional Rust target
-        if: ${{ startsWith(matrix.args, '--target ') }}
-        run: rustup target add ${{ replace(matrix.args, '--target ', '') }}
+        if: ${{ matrix.target != '' }}
+        run: rustup target add ${{ matrix.target }}
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
