@@ -973,16 +973,19 @@ export default function ChatView({
           });
           const sessionId = typeof rec.session_id === "string" ? rec.session_id : activeSessionRef.current?.id ?? null;
           if (sessionId) {
+            const currentActiveSession = activeSessionRef.current;
             pendingSendRef.current = pendingSendRef.current
               ? { ...pendingSendRef.current, sessionId }
               : null;
             const optimisticSession = mergeSessionItem({
               id: sessionId,
-              file_path: activeSessionRef.current?.id === sessionId ? activeSessionRef.current.file_path : "",
+              file_path: currentActiveSession && currentActiveSession.id === sessionId
+                ? currentActiveSession.file_path
+                : "",
               modified_at: `${Math.floor(Date.now() / 1000)}`,
-              first_message: pendingSendRef.current?.message ?? activeSessionRef.current?.first_message ?? "New session",
+              first_message: pendingSendRef.current?.message ?? currentActiveSession?.first_message ?? "New session",
             });
-            if (creatingInitialSessionRef.current || !activeSessionRef.current || activeSessionRef.current.id !== sessionId) {
+            if (creatingInitialSessionRef.current || !currentActiveSession || currentActiveSession.id !== sessionId) {
               activeSessionRef.current = optimisticSession;
               setActiveSession(optimisticSession);
               onActiveSessionChange?.(optimisticSession.id);
