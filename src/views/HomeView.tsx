@@ -683,7 +683,7 @@ export default function HomeView({
             onDeleteInstalledSkill={handleDeleteInstalledSkill}
           />
         ) : (
-          <ScrollArea style={{ flex: 1 }}>
+          <ScrollArea type="always" style={{ flex: 1 }}>
             {isLoading ? (
               <LoadingSkeleton />
             ) : sortedListed.length === 0 ? (
@@ -925,7 +925,7 @@ function SettingsView({
           </SettingsTabButton>
         </Stack>
       </Box>
-      <ScrollArea style={{ flex: 1 }}>
+      <ScrollArea type="always" style={{ flex: 1 }}>
         <Box px={24} py={22} maw={860}>
           {settingsTab === "general" ? (
             <Stack gap={14}>

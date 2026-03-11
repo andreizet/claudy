@@ -78,7 +78,7 @@ export default function UsageDashboardView() {
   }
 
   return (
-    <ScrollArea style={{ flex: 1 }}>
+    <ScrollArea type="always" scrollbars="y" scrollbarSize={8} offsetScrollbars style={{ flex: 1 }}>
       <Stack gap={20} p={20}>
         <Group justify="space-between" align="flex-start" wrap="nowrap">
           <Box>
@@ -277,7 +277,7 @@ function Panel({ title, subtitle, children }: { title: string; subtitle: string;
 
 function DataTable({ headers, rows }: { headers: string[]; rows: string[][] }) {
   return (
-    <ScrollArea>
+    <ScrollArea type="always">
       <Table
         withTableBorder={false}
         withColumnBorders={false}
@@ -321,7 +321,7 @@ function SortableTable<TSortKey extends string>({
   onSortChange: (key: TSortKey) => void;
 }) {
   return (
-    <ScrollArea>
+    <ScrollArea type="always">
       <Table
         withTableBorder={false}
         withColumnBorders={false}

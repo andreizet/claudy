@@ -1,5 +1,6 @@
-import { memo, useEffect, useRef, useState } from "react";
-import { Box, ScrollArea, Text } from "@mantine/core";
+import { ComponentPropsWithoutRef, forwardRef, memo, useEffect, useMemo, useRef, useState } from "react";
+import { Box, Text } from "@mantine/core";
+import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import {
   ChevronDown,
   ChevronUp,
@@ -33,9 +34,6 @@ import markdown from "react-syntax-highlighter/dist/esm/languages/prism/markdown
 import { JsonlRecord, ContentBlock, ContentBlockToolUse, ContentBlockToolResult } from "../../types";
 import FileReferenceBadge from "./FileReferenceBadge";
 
-const DEFAULT_MESSAGE_HEIGHT = 220;
-const DEFAULT_STREAM_HEIGHT = 120;
-const VIRTUAL_OVERSCAN = 6;
 
 SyntaxHighlighter.registerLanguage("tsx", tsx);
 SyntaxHighlighter.registerLanguage("typescript", typescript);
@@ -63,156 +61,159 @@ interface Props {
   userAvatarUrl?: string;
 }
 
+type MessageListItem =
+  | { key: string; kind: "message"; record: JsonlRecord }
+  | { key: string; kind: "stream-message"; record: JsonlRecord }
+  | { key: string; kind: "pending-user"; text: string }
+  | { key: string; kind: "stream"; blocks: ContentBlock[] };
+
+const VirtuosoScroller = forwardRef<HTMLDivElement, ComponentPropsWithoutRef<"div">>(function VirtuosoScroller(
+  props,
+  ref,
+) {
+  return <div {...props} ref={ref} data-testid="viewport" className="message-list-scroller" />;
+});
+
+const VirtuosoList = forwardRef<HTMLDivElement, ComponentPropsWithoutRef<"div">>(function VirtuosoList(
+  props,
+  ref,
+) {
+  return (
+    <div
+      {...props}
+      ref={ref}
+      style={{
+        ...(props.style ?? {}),
+        maxWidth: 820,
+        margin: "0 auto",
+        width: "100%",
+      }}
+    />
+  );
+});
+
 function MessageList({ messages, streamMessages, streamBlocks, showGenerating, pendingUserText, sessionId, userAvatarUrl }: Props) {
-  const renderStart = performance.now();
-  const viewportRef = useRef<HTMLDivElement>(null);
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
+  const scrollRef = useRef<HTMLElement | null>(null);
+  const atBottomRef = useRef(true);
+  const initialScrollSessionRef = useRef<string | null>(null);
+  const pendingInitialScrollSessionRef = useRef<string | null>(null);
   const [atTop, setAtTop] = useState(true);
   const [atBottom, setAtBottom] = useState(true);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(0);
-  const [itemHeights, setItemHeights] = useState<Record<number, number>>({});
-  const prevItemCountRef = useRef(messages.length + (streamMessages?.length ?? 0) + ((streamBlocks?.length || showGenerating) ? 1 : 0));
 
-  const refreshScrollState = () => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
-    const top = el.scrollTop;
-    setScrollTop(top);
-    setViewportHeight(el.clientHeight);
-    setAtTop(top <= 1);
-    setAtBottom(maxTop - top <= 1);
-  };
-
-  const items: Array<
-    | { key: string; kind: "message"; record: JsonlRecord }
-    | { key: string; kind: "pending-user"; text: string }
-    | { key: string; kind: "stream-message"; record: JsonlRecord }
-    | { key: string; kind: "stream"; blocks: ContentBlock[] }
-  > = [
-    ...messages.map((record, index) => ({
-      key: `${sessionId ?? "session"}-message-${index}`,
-      kind: "message" as const,
-      record,
-    })),
+  const items = useMemo(() => [
+    ...messages.flatMap((record, index) => (
+      shouldRenderRecord(record)
+        ? [{
+          key: `${sessionId ?? "session"}-message-${index}`,
+          kind: "message" as const,
+          record,
+        }]
+        : []
+    )),
     ...(pendingUserText ? [{ key: `${sessionId ?? "session"}-pending-user`, kind: "pending-user" as const, text: pendingUserText }] : []),
-    ...((streamMessages ?? []).map((record, index) => ({
-      key: `${sessionId ?? "session"}-stream-message-${index}`,
-      kind: "stream-message" as const,
-      record,
-    }))),
+    ...((streamMessages ?? []).flatMap((record, index) => (
+      shouldRenderRecord(record)
+        ? [{
+          key: `${sessionId ?? "session"}-stream-message-${index}`,
+          kind: "stream-message" as const,
+          record,
+        }]
+        : []
+    ))),
     ...(((streamBlocks && streamBlocks.length > 0) || showGenerating)
       ? [{ key: `${sessionId ?? "session"}-stream`, kind: "stream" as const, blocks: streamBlocks ?? [] }]
       : []),
-  ];
+  ], [messages, streamMessages, streamBlocks, showGenerating, pendingUserText, sessionId]);
 
-  const offsets: number[] = new Array(items.length);
-  let totalHeight = 0;
-  for (let i = 0; i < items.length; i += 1) {
-    offsets[i] = totalHeight;
-    totalHeight += itemHeights[i] ?? (items[i].kind === "stream" ? DEFAULT_STREAM_HEIGHT : DEFAULT_MESSAGE_HEIGHT);
-  }
-
-  const startIndex = Math.max(0, findVisibleIndex(offsets, scrollTop) - VIRTUAL_OVERSCAN);
-  const endIndex = Math.min(
-    items.length,
-    findVisibleEndIndex(offsets, itemHeights, items, scrollTop + viewportHeight) + VIRTUAL_OVERSCAN
-  );
-  const visibleItems = items.slice(startIndex, endIndex);
-  const shouldVirtualize = items.length > 80;
-
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => {
-      const el = viewportRef.current;
-      if (!el) return;
-      el.scrollTop = el.scrollHeight;
-      refreshScrollState();
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [sessionId]);
-
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => {
-      const el = viewportRef.current;
-      if (!el) return;
-      const itemCount = items.length;
-      const messageCountIncreased = itemCount > prevItemCountRef.current;
-      if (messageCountIncreased && atBottom) {
-        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-      }
-      refreshScrollState();
-      prevItemCountRef.current = itemCount;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [items.length, atBottom]);
-
-  useEffect(() => {
-    const el = viewportRef.current;
+  const scrollToBottom = (behavior: "auto" | "smooth") => {
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior });
+    const el = scrollRef.current;
     if (!el) return;
-    const onScroll = () => refreshScrollState();
-    refreshScrollState();
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [sessionId]);
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  };
 
+  useEffect(() => {
+    if (!sessionId || items.length === 0) return;
+    if (initialScrollSessionRef.current === sessionId) return;
+    pendingInitialScrollSessionRef.current = sessionId;
+  }, [sessionId, items.length]);
+
+  useEffect(() => {
+    if (!sessionId || items.length === 0) return;
+    if (pendingInitialScrollSessionRef.current !== sessionId) return;
+
+    const timeoutId = window.setTimeout(() => {
+      requestAnimationFrame(() => {
+        if (pendingInitialScrollSessionRef.current !== sessionId) return;
+        scrollToBottom("auto");
+      });
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [sessionId, items.length]);
+
+  useEffect(() => {
+    if (initialScrollSessionRef.current !== sessionId) return;
+    if (items.length === 0) {
+      initialScrollSessionRef.current = null;
+    }
+  }, [sessionId, items.length]);
+
+  // Keep the growing streaming response pinned when already at bottom.
+  useEffect(() => {
+    if (atBottomRef.current) {
+      virtuosoRef.current?.autoscrollToBottom();
+    }
+  }, [streamBlocks, showGenerating]);
+
+  // Keyboard nav
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const el = viewportRef.current;
+      const el = scrollRef.current;
       if (!el) return;
-
       const target = event.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
-      const isEditable =
-        tag === "input"
-        || tag === "textarea"
-        || tag === "select"
-        || target?.isContentEditable;
-      if (isEditable) return;
+      if (tag === "input" || tag === "textarea" || tag === "select" || target?.isContentEditable) return;
 
       if (event.key === "PageUp") {
         event.preventDefault();
         el.scrollBy({ top: -Math.max(120, el.clientHeight * 0.85), behavior: "auto" });
-        return;
-      }
-
-      if (event.key === "PageDown") {
+      } else if (event.key === "PageDown") {
         event.preventDefault();
         el.scrollBy({ top: Math.max(120, el.clientHeight * 0.85), behavior: "auto" });
-        return;
-      }
-
-      if (event.key === "Home") {
+      } else if (event.key === "Home") {
         event.preventDefault();
         el.scrollTo({ top: 0, behavior: "auto" });
-        return;
-      }
-
-      if (event.key === "End") {
+      } else if (event.key === "End") {
         event.preventDefault();
         el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
       }
     };
-
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [sessionId]);
+  }, []);
 
-  // Build a map of tool_use_id → result for expanding tool cards
-  const toolResults = new Map<string, { content: string; isError: boolean }>();
-  for (const record of messages) {
-    if (!record.message || record.message.role !== "user") continue;
-    const content = record.message.content;
-    if (typeof content === "string") continue;
-    for (const block of content) {
-      if (block.type === "tool_result") {
-        const b = block as ContentBlockToolResult;
-        const text = typeof b.content === "string"
-          ? b.content
-          : (b.content as ContentBlock[]).filter(x => x.type === "text").map(x => (x as { type: "text"; text: string }).text).join("\n");
-        toolResults.set(b.tool_use_id, { content: text, isError: !!b.is_error });
+  const toolResults = useMemo(() => {
+    const map = new Map<string, { content: string; isError: boolean }>();
+    for (const record of messages) {
+      if (!record.message || record.message.role !== "user") continue;
+      const content = record.message.content;
+      if (typeof content === "string") continue;
+      for (const block of content) {
+        if (block.type === "tool_result") {
+          const b = block as ContentBlockToolResult;
+          const text = typeof b.content === "string"
+            ? b.content
+            : (b.content as ContentBlock[]).filter(x => x.type === "text").map(x => (x as { type: "text"; text: string }).text).join("\n");
+          map.set(b.tool_use_id, { content: text, isError: !!b.is_error });
+        }
       }
     }
-  }
+    return map;
+  }, [messages]);
 
   if (messages.length === 0 && (streamMessages?.length ?? 0) === 0 && (!streamBlocks || streamBlocks.length === 0) && !showGenerating && !pendingUserText) {
     return (
@@ -223,129 +224,90 @@ function MessageList({ messages, streamMessages, streamBlocks, showGenerating, p
   }
 
   return (
-    <Box style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
-    <ScrollArea h="100%" viewportRef={viewportRef}>
-      <Box style={{ padding: "24px 24px 140px" }}>
-        <Box style={{ maxWidth: 820, margin: "0 auto", width: "100%" }}>
-        {shouldVirtualize ? (
-          <Box style={{ height: totalHeight, position: "relative" }}>
-            {visibleItems.map((item, index) => {
-              const actualIndex = startIndex + index;
-              return (
-                <MeasuredItem
-                  key={item.key}
-                  itemIndex={actualIndex}
-                  top={offsets[actualIndex]}
-                  setItemHeights={setItemHeights}
-                >
-                  {item.kind === "message" || item.kind === "stream-message" ? (
-                    <MessageItem record={item.record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />
-                  ) : item.kind === "pending-user" ? (
-                    <UserBubble text={item.text} avatarUrl={userAvatarUrl} />
-                  ) : (
-                    <StreamingItem blocks={item.blocks} />
-                  )}
-                </MeasuredItem>
-              );
-            })}
-          </Box>
-        ) : (
-          <Box style={{ display: "flex", flexDirection: "column" }}>
-            {items.map((item) => (
-              <Box key={item.key}>
-                {item.kind === "message" || item.kind === "stream-message" ? (
-                  <MessageItem record={item.record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />
-                ) : item.kind === "pending-user" ? (
-                  <UserBubble text={item.text} avatarUrl={userAvatarUrl} />
-                ) : (
-                  <StreamingItem blocks={item.blocks} />
-                )}
-              </Box>
-            ))}
-          </Box>
-        )}
-        </Box>
-      </Box>
-    </ScrollArea>
+    <Box style={{ flex: 1, minHeight: 0, position: "relative" }}>
+      <Virtuoso<MessageListItem>
+        ref={virtuosoRef}
+        data={items}
+        style={{ height: "100%" }}
+        alignToBottom
+        followOutput="smooth"
+        atTopThreshold={1}
+        atBottomThreshold={1}
+        atTopStateChange={setAtTop}
+        atBottomStateChange={(nextAtBottom) => {
+          atBottomRef.current = nextAtBottom;
+          setAtBottom(nextAtBottom);
+        }}
+        totalListHeightChanged={() => {
+          if (!sessionId || items.length === 0) return;
+          if (pendingInitialScrollSessionRef.current !== sessionId) return;
 
-    {/* Scroll nav */}
-    <ScrollNav
-      onTop={() => viewportRef.current?.scrollTo({ top: 0, behavior: "smooth" })}
-      onBottom={() => viewportRef.current?.scrollTo({ top: viewportRef.current.scrollHeight, behavior: "smooth" })}
-      disableTop={atTop}
-      disableBottom={atBottom}
-    />
+          requestAnimationFrame(() => {
+            if (pendingInitialScrollSessionRef.current !== sessionId) return;
+            scrollToBottom("auto");
+            initialScrollSessionRef.current = sessionId;
+            pendingInitialScrollSessionRef.current = null;
+          });
+        }}
+        computeItemKey={(_, item) => item.key}
+        scrollerRef={(el) => {
+          scrollRef.current = el instanceof HTMLElement ? el : null;
+        }}
+        components={{
+          Scroller: VirtuosoScroller,
+          List: VirtuosoList,
+          Header: () => <div style={{ height: 24 }} />,
+          Footer: () => <div style={{ height: 140 }} />,
+        }}
+        itemContent={(_, item) => {
+          if (item.kind === "message" || item.kind === "stream-message") {
+            return <MessageItem record={item.record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />;
+          }
+          if (item.kind === "pending-user") {
+            return <UserBubble text={item.text} avatarUrl={userAvatarUrl} />;
+          }
+          return <StreamingItem blocks={item.blocks} />;
+        }}
+      />
+
+      <ScrollNav
+        onTop={() => scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" })}
+        onBottom={() => scrollToBottom("smooth")}
+        disableTop={atTop}
+        disableBottom={atBottom}
+      />
     </Box>
   );
 }
 
 export default memo(MessageList);
 
-function findVisibleIndex(offsets: number[], target: number): number {
-  let low = 0;
-  let high = offsets.length - 1;
-  let answer = 0;
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2);
-    if (offsets[mid] <= target) {
-      answer = mid;
-      low = mid + 1;
-    } else {
-      high = mid - 1;
-    }
+function shouldRenderRecord(record: JsonlRecord): boolean {
+  if (record.type === "summary") return true;
+  if (record.type === "local-command-caveat") return false;
+  if (!record.message) return false;
+
+  if (record.message.role === "user") {
+    const text = typeof record.message.content === "string" ? record.message.content : extractUserText(record.message.content);
+    return shouldRenderUserText(text);
   }
-  return answer;
+
+  const blocks = typeof record.message.content === "string"
+    ? [{ type: "text" as const, text: record.message.content }]
+    : record.message.content;
+
+  return blocks.some((block) => block.type === "text" || block.type === "tool_use");
 }
 
-function findVisibleEndIndex(
-  offsets: number[],
-  itemHeights: Record<number, number>,
-  items: Array<{ kind: "message" | "pending-user" | "stream-message" | "stream" }>,
-  targetBottom: number
-): number {
-  let index = findVisibleIndex(offsets, targetBottom);
-  while (
-    index < items.length
-    && offsets[index] + (itemHeights[index] ?? (items[index].kind === "stream" ? DEFAULT_STREAM_HEIGHT : DEFAULT_MESSAGE_HEIGHT)) < targetBottom
-  ) {
-    index += 1;
-  }
-  return Math.min(items.length, index + 1);
-}
+function shouldRenderUserText(text: string): boolean {
+  if (!text.trim()) return false;
+  if (extractTag(text, "local-command-caveat") !== null) return false;
+  if (isExpandedSkillPrompt(text)) return false;
 
-function MeasuredItem({
-  itemIndex,
-  top,
-  setItemHeights,
-  children,
-}: {
-  itemIndex: number;
-  top: number;
-  setItemHeights: React.Dispatch<React.SetStateAction<Record<number, number>>>;
-  children: React.ReactNode;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const lastHeightRef = useRef<number | null>(null);
+  const stdout = extractTag(text, "local-command-stdout") ?? extractTag(text, "local-command-stderr");
+  if (stdout !== null) return stdout.trim().length > 0;
 
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const measure = () => {
-      const height = el.getBoundingClientRect().height;
-      setItemHeights((current) => (current[itemIndex] === height ? current : { ...current, [itemIndex]: height }));
-      if (lastHeightRef.current !== height) lastHeightRef.current = height;
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [itemIndex, setItemHeights, top]);
-
-  return (
-    <Box ref={ref} style={{ position: "absolute", top, left: 0, right: 0 }}>
-      {children}
-    </Box>
-  );
+  return true;
 }
 
 function StreamingItem({ blocks }: { blocks: ContentBlock[] }) {
@@ -358,7 +320,7 @@ function StreamingItem({ blocks }: { blocks: ContentBlock[] }) {
     timestamp: new Date(0).toISOString(),
   };
   return (
-    <Box style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+    <Box style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: 16 }}>
       {blocks.map((block, index) => (
         <AssistantBlock
           key={`${block.type}-${index}`}
@@ -451,7 +413,7 @@ function MessageItem({
   const blocks = typeof content === "string" ? [{ type: "text" as const, text: content }] : content;
 
   return (
-    <Box style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+    <Box style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: 16 }}>
       {blocks.map((block, i) => (
         <AssistantBlock key={i} block={block} record={record} isLast={i === blocks.length - 1} toolResults={toolResults} />
       ))}
@@ -478,7 +440,7 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
     const cmdArgs = extractTag(text, "command-args");
     const display = [cmdName, cmdArgs].filter(Boolean).join(" ").trim();
     return (
-      <Box style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+      <Box style={{ display: "flex", justifyContent: "flex-end", paddingBottom: 8 }}>
         <Box style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 12px", borderRadius: 8, background: "#18181b", border: "1px solid #27272a" }}>
           <Terminal size={12} strokeWidth={2} style={{ color: "#52525b", flexShrink: 0 }} />
           <Text size="sm" ff="monospace" c="#d4d4d8">{display || cmdMsg || cmdName}</Text>
@@ -492,7 +454,7 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
   if (stdout !== null) {
     if (!stdout.trim()) return null;
     return (
-      <Box style={{ marginBottom: 8, maxWidth: "88%" }}>
+      <Box style={{ paddingBottom: 8, maxWidth: "88%" }}>
         <Box
           component="pre"
           style={{
@@ -519,7 +481,7 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
   const { fileRefs, body } = extractUserBubbleContent(text);
 
   return (
-    <Box style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-end", gap: 8, marginBottom: 16 }}>
+    <Box style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-end", gap: 8, paddingBottom: 16 }}>
       <Box
         style={{
           maxWidth: "72%",
@@ -663,7 +625,7 @@ function ThinkingCard({ thinking }: { thinking: string }) {
 
 function AssistantText({ text }: { text: string }) {
   return (
-    <Box className="md-body" style={{ color: "#d4d4d8", fontSize: 14, lineHeight: 1.75, wordBreak: "break-word" }}>
+    <Box className="md-body" style={{ color: "#d4d4d8", fontSize: 14, lineHeight: 1.75, wordBreak: "break-word", display: "flow-root" }}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -1022,7 +984,7 @@ function WorkedFor({ ms, cost }: { ms: number; cost?: number }) {
 
 function SummaryDivider() {
   return (
-    <Box style={{ display: "flex", alignItems: "center", gap: 12, margin: "16px 0" }}>
+    <Box style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 0" }}>
       <Box style={{ flex: 1, height: 1, background: "#1f1f23" }} />
       <Text size="xs" c="#3f3f46">Conversation summary</Text>
       <Box style={{ flex: 1, height: 1, background: "#1f1f23" }} />

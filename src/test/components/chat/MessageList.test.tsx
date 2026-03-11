@@ -1,26 +1,8 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { VirtuosoMockContext } from "react-virtuoso";
 import { renderWithProviders } from "../../providers";
 import { JsonlRecord } from "../../../types";
-
-vi.mock("@mantine/core", async () => {
-  const actual = await vi.importActual<typeof import("@mantine/core")>("@mantine/core");
-  return {
-    ...actual,
-    ScrollArea: ({
-      children,
-      viewportRef,
-      ...props
-    }: {
-      children: React.ReactNode;
-      viewportRef?: React.Ref<HTMLDivElement>;
-    }) => (
-      <div {...props} data-testid="viewport" ref={viewportRef}>
-        {children}
-      </div>
-    ),
-  };
-});
 
 import MessageList from "../../../components/chat/MessageList";
 
@@ -56,19 +38,29 @@ function setupViewport() {
   return viewport;
 }
 
+function renderMessageList(node: React.ReactElement) {
+  return renderWithProviders(
+    <VirtuosoMockContext.Provider value={{ viewportHeight: 200, itemHeight: 80 }}>
+      {node}
+    </VirtuosoMockContext.Provider>
+  );
+}
+
 describe("MessageList behavior", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
   it("scrolls to bottom when the session changes", async () => {
-    const { rerender } = renderWithProviders(
+    const { rerender } = renderMessageList(
       <MessageList messages={makeMessages(20)} sessionId="session-a" />
     );
     const viewport = setupViewport();
 
     rerender(
-      <MessageList messages={makeMessages(20)} sessionId="session-b" />
+      <VirtuosoMockContext.Provider value={{ viewportHeight: 200, itemHeight: 80 }}>
+        <MessageList messages={makeMessages(20)} sessionId="session-b" />
+      </VirtuosoMockContext.Provider>
     );
 
     await waitFor(() => {
@@ -77,7 +69,7 @@ describe("MessageList behavior", () => {
   });
 
   it("Home, End, PageUp, and PageDown work repeatedly", async () => {
-    renderWithProviders(<MessageList messages={makeMessages(40)} sessionId="session-nav" />);
+    renderMessageList(<MessageList messages={makeMessages(40)} sessionId="session-nav" />);
     const viewport = setupViewport();
     viewport.scrollTop = 800;
 
@@ -98,7 +90,7 @@ describe("MessageList behavior", () => {
   });
 
   it("top and bottom buttons disable correctly in the virtualized list", async () => {
-    renderWithProviders(<MessageList messages={makeMessages(60)} sessionId="session-buttons" />);
+    renderMessageList(<MessageList messages={makeMessages(60)} sessionId="session-buttons" />);
     const viewport = setupViewport();
     viewport.scrollTop = 0;
     fireEvent.scroll(viewport);
@@ -121,7 +113,7 @@ describe("MessageList behavior", () => {
   });
 
   it("shows a collapsed thinking card only for the active stream and expands on click", async () => {
-    renderWithProviders(
+    renderMessageList(
       <MessageList
         messages={[]}
         sessionId="session-thinking"
@@ -143,7 +135,7 @@ describe("MessageList behavior", () => {
   });
 
   it("renders leading file references in user messages as badges without remove controls", () => {
-    renderWithProviders(
+    renderMessageList(
       <MessageList
         sessionId="session-files"
         messages={[
@@ -171,7 +163,7 @@ describe("MessageList behavior", () => {
   });
 
   it("hides expanded skill prompt boilerplate recorded as a user message", () => {
-    renderWithProviders(
+    renderMessageList(
       <MessageList
         sessionId="session-skill"
         messages={[

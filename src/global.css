@@ -1,5 +1,5 @@
 :root {
-  --scrollbar-thumb: #FFE100;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.4);
   --scrollbar-track: #16161b;
 }
 
@@ -18,8 +18,8 @@ body,
 }
 
 *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 4px;
+  height: 4px;
 }
 
 *::-webkit-scrollbar-track {
@@ -29,7 +29,7 @@ body,
 *::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
   border-radius: 999px;
-  border: 2px solid var(--scrollbar-track);
+  border: 1px solid var(--scrollbar-track);
 }
 
 *::-webkit-scrollbar-corner {
@@ -39,11 +39,39 @@ body,
 /* Mantine ScrollArea custom scrollbar */
 [data-mantine-scrollbar] {
   background-color: transparent !important;
+  width: 4px !important;
 }
 
 [data-mantine-scrollbar] > div {
-  background-color: #FFE100 !important;
+  background-color: var(--scrollbar-thumb) !important;
+  border-radius: 999px !important;
   opacity: 1 !important;
+}
+
+[data-mantine-scrollbar] .m_d8b5e363 {
+  background-color: var(--scrollbar-thumb) !important;
+  border-radius: 999px !important;
+  opacity: 1 !important;
+}
+
+.message-list-scroller {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.message-list-scroller::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.message-list-scroller::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+.message-list-scroller::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb) !important;
+  border-radius: 999px;
+  border: 1px solid var(--scrollbar-track);
 }
 
 .tool-card__content {

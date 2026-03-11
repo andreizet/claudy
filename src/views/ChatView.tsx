@@ -1364,7 +1364,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
         </Box>
 
         {/* Session list */}
-        <ScrollArea style={{ flex: 1 }}>
+        <ScrollArea type="always" style={{ flex: 1 }}>
           <Box pb={12}>
             {sessionItems.length === 0 ? (
               <Text size="xs" c="#52525b" px={14} pt={8}>No sessions yet</Text>
@@ -1842,12 +1842,12 @@ export function SessionItem({
         width: "100%",
         marginLeft: 0,
         padding: "8px 8px",
-        borderLeft: active ? "2px solid #f3c63b" : "2px solid transparent",
-        borderTop: active ? "1px solid #2a3243" : "1px solid transparent",
-        borderRight: active ? "1px solid #2a3243" : "1px solid transparent",
-        borderBottom: active ? "1px solid #2a3243" : "1px solid transparent",
-        borderRadius: 10,
-        background: active ? "#171c26" : hovered ? "#141922" : "transparent",
+        borderLeft: active ? "2px solid #FFE100" : "2px solid transparent",
+        borderTop: active ? "1px solid #2a2a32" : "1px solid transparent",
+        borderRight: active ? "1px solid #2a2a32" : "1px solid transparent",
+        borderBottom: active ? "1px solid #2a2a32" : "1px solid transparent",
+        borderRadius: 0,
+        background: active ? "#1e1e24" : hovered ? "#18181b" : "transparent",
         boxShadow: "none",
         textAlign: "left",
         display: "flex",
@@ -1921,12 +1921,12 @@ export function SessionItem({
               <Text
                 size="xs"
                 fw={active ? 600 : 500}
-                c={active ? "#f1f4fa" : hovered ? "#d4dbe8" : "#a0acc0"}
+                c={active ? "#f0f0f2" : hovered ? "#a1a1aa" : "#71717a"}
                 style={{ lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", transition: "color 180ms ease" }}
               >
                 {title}
               </Text>
-              <Text size="11px" c={active ? "#8d99ad" : "#6f7b90"} mt={3}>
+              <Text size="11px" c={active ? "#a1a1aa" : "#71717a"} mt={3}>
                 {relativeTime(session.modified_at)}
               </Text>
             </Box>
