@@ -244,8 +244,63 @@ describe("ChatView core message flow", () => {
 
     fireEvent.click(screen.getByTitle("Session settings"));
     expect(await screen.findByText("Built-in Tools (3)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "CLAUDE.md" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument());
+  });
+
+  it("loads and creates CLAUDE.md from the session settings overlay", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_claude_session_init":
+          return Promise.resolve({
+            session_id: mockWorkspace.sessions[0].id,
+            cwd: mockWorkspace.decoded_path,
+            model: "claude-sonnet-4-6",
+            tools: ["Read", "Edit", "Bash"],
+            mcp_servers: [],
+          });
+        case "get_session_messages":
+          return Promise.resolve([]);
+        case "get_workspace_files":
+          return Promise.resolve([]);
+        case "get_workspace_slash_commands":
+          return Promise.resolve([]);
+        case "get_workspace_favicon":
+          return Promise.resolve(null);
+        case "get_workspace_claude_md":
+          return Promise.resolve({ exists: false, content: "" });
+        case "save_workspace_claude_md":
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    renderChat(mockWorkspace);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_session_messages", expect.any(Object)));
+
+    fireEvent.click(screen.getByTitle("Session settings"));
+    expect(await screen.findByRole("button", { name: "CLAUDE.md" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "CLAUDE.md" }));
+
+    expect(await screen.findByText("No CLAUDE.md file exists yet. Start typing and save to create it.")).toBeInTheDocument();
+    const editor = screen.getByRole("textbox", { name: "CLAUDE.md editor" });
+    fireEvent.change(editor, { target: { value: "# Project rules\n\n- Keep tests green." } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(await screen.findByText("Project rules")).toBeInTheDocument();
+    expect(screen.getByText("Keep tests green.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("save_workspace_claude_md", {
+        workspacePath: mockWorkspace.decoded_path,
+        content: "# Project rules\n\n- Keep tests green.",
+      });
+    });
   });
 
   it("slash command opens interactive overlay instead of normal send", async () => {

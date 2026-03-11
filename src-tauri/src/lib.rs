@@ -187,6 +187,12 @@ pub struct SlashCommandInfo {
     pub kind: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct WorkspaceClaudeMd {
+    pub exists: bool,
+    pub content: String,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct InstalledSkill {
     pub folder_name: String,
@@ -1356,6 +1362,39 @@ fn get_session_messages(file_path: String) -> Vec<serde_json::Value> {
         .collect();
     eprintln!("[get_session_messages] parsed {} records", records.len());
     records
+}
+
+#[tauri::command]
+fn get_workspace_claude_md(workspace_path: String) -> Result<WorkspaceClaudeMd, String> {
+    let workspace = PathBuf::from(&workspace_path);
+    if !workspace.exists() || !workspace.is_dir() {
+        return Err("Workspace path does not exist".to_string());
+    }
+
+    let claude_md = workspace.join("CLAUDE.md");
+    if !claude_md.exists() {
+        return Ok(WorkspaceClaudeMd {
+            exists: false,
+            content: String::new(),
+        });
+    }
+
+    let content = fs::read_to_string(&claude_md).map_err(|e| e.to_string())?;
+    Ok(WorkspaceClaudeMd {
+        exists: true,
+        content,
+    })
+}
+
+#[tauri::command]
+fn save_workspace_claude_md(workspace_path: String, content: String) -> Result<(), String> {
+    let workspace = PathBuf::from(&workspace_path);
+    if !workspace.exists() || !workspace.is_dir() {
+        return Err("Workspace path does not exist".to_string());
+    }
+
+    let claude_md = workspace.join("CLAUDE.md");
+    fs::write(&claude_md, content).map_err(|e| e.to_string())
 }
 
 fn delete_session_files_for_path(path: &Path) -> Result<(), String> {
@@ -2610,6 +2649,8 @@ pub fn run() {
             describe_workspace,
             delete_session_file,
             get_session_messages,
+            get_workspace_claude_md,
+            save_workspace_claude_md,
             get_claude_account_info,
             list_claude_installations,
             get_claude_session_init,

@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronLeft as ChevronLeftIcon,
   Cog,
+  Eye,
   Folder,
   LoaderCircle,
   Pen,
@@ -20,6 +21,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { ClaudeAccountInfo, ContentBlock, ContentBlockToolUse, DiscoveredWorkspace, DiscoveredSession, JsonlRecord } from "../types";
 import MessageList from "../components/chat/MessageList";
 import FileReferenceBadge from "../components/chat/FileReferenceBadge";
@@ -103,6 +106,14 @@ interface ClaudeSessionInit {
   tools: string[];
   mcp_servers: unknown;
 }
+
+interface ClaudeMdDocument {
+  exists: boolean;
+  content: string;
+}
+
+type SessionSettingsTabKey = "settings" | "claude-md";
+type ClaudeMdViewMode = "edit" | "preview";
 
 function ensureStreamTextBlock(blocks: ContentBlock[], index: number): ContentBlock[] {
   const next = blocks.slice();
@@ -266,6 +277,13 @@ export default function ChatView({
   const [sessionToolState, setSessionToolState] = useState<SessionToolState | null>(null);
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
   const [sessionSettingsSnapshot, setSessionSettingsSnapshot] = useState<SessionToolState | null>(null);
+  const [sessionSettingsTab, setSessionSettingsTab] = useState<SessionSettingsTabKey>("settings");
+  const [claudeMdContent, setClaudeMdContent] = useState("");
+  const [claudeMdExists, setClaudeMdExists] = useState(false);
+  const [claudeMdLoading, setClaudeMdLoading] = useState(false);
+  const [claudeMdLoadError, setClaudeMdLoadError] = useState<string | null>(null);
+  const [claudeMdViewMode, setClaudeMdViewMode] = useState<ClaudeMdViewMode>("edit");
+  const [savingSessionSettings, setSavingSessionSettings] = useState(false);
   const [mcpGroupsExpanded, setMcpGroupsExpanded] = useState(false);
   const [initializingNewSession, setInitializingNewSession] = useState(false);
   const [loadingSessionSettings, setLoadingSessionSettings] = useState(false);
@@ -618,6 +636,39 @@ export default function ChatView({
   }, [activeSession, initializingNewSession, workspace.decoded_path]);
 
   useEffect(() => {
+    if (!sessionSettingsOpen) return;
+    let cancelled = false;
+
+    setClaudeMdLoading(true);
+    setClaudeMdLoadError(null);
+
+    invoke<ClaudeMdDocument>("get_workspace_claude_md", {
+      workspacePath: workspace.decoded_path,
+    })
+      .then((document) => {
+        if (cancelled) return;
+        setClaudeMdExists(document.exists === true);
+        setClaudeMdContent(typeof document.content === "string" ? document.content : "");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error(error);
+        setClaudeMdExists(false);
+        setClaudeMdContent("");
+        setClaudeMdLoadError("Unable to load CLAUDE.md.");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setClaudeMdLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionSettingsOpen, workspace.decoded_path]);
+
+  useEffect(() => {
     if (!activeSession || sessionToolState || loadingSessionSettings || initializingNewSession) return;
     void fetchSessionSettings(activeSession.id);
   }, [activeSession, initializingNewSession, loadingSessionSettings, sessionToolState]);
@@ -676,6 +727,8 @@ export default function ChatView({
 
   const openSessionSettings = () => {
     setSessionSettingsSnapshot(sessionToolState ? { ...sessionToolState, selectedTools: [...sessionToolState.selectedTools], availableTools: [...sessionToolState.availableTools], mcpServers: [...sessionToolState.mcpServers] } : null);
+    setSessionSettingsTab("settings");
+    setClaudeMdViewMode("edit");
     setSessionSettingsOpen(true);
     if (!sessionToolState && !loadingSessionSettings) {
       void fetchSessionSettings(activeSession?.id ?? null);
@@ -685,6 +738,7 @@ export default function ChatView({
   const closeSessionSettings = () => {
     setSessionSettingsOpen(false);
     setSessionSettingsSnapshot(null);
+    setSavingSessionSettings(false);
   };
 
   const cancelSessionSettings = () => {
@@ -694,15 +748,32 @@ export default function ChatView({
     closeSessionSettings();
   };
 
-  const saveSessionSettings = () => {
-    if (sessionToolState && activeSession?.id) {
-      saveSessionToolPolicy(activeSession.id, {
-        selectedTools: sessionToolState.selectedTools,
-        availableTools: sessionToolState.availableTools,
-        mcpServers: sessionToolState.mcpServers,
-      });
+  const saveSessionSettings = async () => {
+    setSavingSessionSettings(true);
+    try {
+      if (sessionToolState && activeSession?.id) {
+        saveSessionToolPolicy(activeSession.id, {
+          selectedTools: sessionToolState.selectedTools,
+          availableTools: sessionToolState.availableTools,
+          mcpServers: sessionToolState.mcpServers,
+        });
+      }
+
+      if (claudeMdLoadError === null && (claudeMdExists || claudeMdContent.trim().length > 0)) {
+        await invoke("save_workspace_claude_md", {
+          workspacePath: workspace.decoded_path,
+          content: claudeMdContent,
+        });
+        setClaudeMdExists(true);
+      }
+
+      closeSessionSettings();
+    } catch (error) {
+      console.error(error);
+      window.alert("Failed to save session settings.");
+    } finally {
+      setSavingSessionSettings(false);
     }
-    closeSessionSettings();
   };
 
   const syncInteractiveTerminalSize = (sessionId: string) => {
@@ -1879,6 +1950,15 @@ export default function ChatView({
           <SessionSettingsOverlay
             state={sessionToolState}
             loading={loadingSessionSettings || (initializingNewSession && !sessionToolState)}
+            activeTab={sessionSettingsTab}
+            onTabChange={setSessionSettingsTab}
+            claudeMdContent={claudeMdContent}
+            claudeMdExists={claudeMdExists}
+            claudeMdLoading={claudeMdLoading}
+            claudeMdLoadError={claudeMdLoadError}
+            claudeMdViewMode={claudeMdViewMode}
+            onClaudeMdChange={setClaudeMdContent}
+            onClaudeMdViewModeChange={setClaudeMdViewMode}
             required={!activeSession}
             mcpExpanded={mcpGroupsExpanded}
             onToggleMcpExpanded={() => setMcpGroupsExpanded((current) => !current)}
@@ -1886,7 +1966,8 @@ export default function ChatView({
             onEnableAll={handleEnableAllTools}
             onDisableAll={handleDisableAllTools}
             onCancel={!activeSession ? undefined : cancelSessionSettings}
-            onSave={saveSessionSettings}
+            onSave={() => void saveSessionSettings()}
+            saving={savingSessionSettings}
           />
         ) : null}
       </Box>
@@ -2155,6 +2236,15 @@ function ActionIconButton({
 function SessionSettingsOverlay({
   state,
   loading,
+  activeTab,
+  onTabChange,
+  claudeMdContent,
+  claudeMdExists,
+  claudeMdLoading,
+  claudeMdLoadError,
+  claudeMdViewMode,
+  onClaudeMdChange,
+  onClaudeMdViewModeChange,
   required,
   mcpExpanded,
   onToggleMcpExpanded,
@@ -2163,9 +2253,19 @@ function SessionSettingsOverlay({
   onDisableAll,
   onCancel,
   onSave,
+  saving,
 }: {
   state: SessionToolState | null;
   loading: boolean;
+  activeTab: SessionSettingsTabKey;
+  onTabChange: (tab: SessionSettingsTabKey) => void;
+  claudeMdContent: string;
+  claudeMdExists: boolean;
+  claudeMdLoading: boolean;
+  claudeMdLoadError: string | null;
+  claudeMdViewMode: ClaudeMdViewMode;
+  onClaudeMdChange: (value: string) => void;
+  onClaudeMdViewModeChange: (mode: ClaudeMdViewMode) => void;
   required: boolean;
   mcpExpanded: boolean;
   onToggleMcpExpanded: () => void;
@@ -2174,6 +2274,7 @@ function SessionSettingsOverlay({
   onDisableAll: () => void;
   onCancel?: () => void;
   onSave: () => void;
+  saving: boolean;
 }) {
   const { builtinTools, mcpGroups } = splitToolsBySource(state?.availableTools ?? [], state?.mcpServers ?? []);
   const toggleGroupTools = (tools: string[], checked: boolean) => {
@@ -2213,146 +2314,265 @@ function SessionSettingsOverlay({
           <Box style={{ minWidth: 0 }}>
             <Text size="lg" fw={600} c="#f4f4f5">Session settings</Text>
             <Text size="xs" c="#71717a" mt={2}>
-              {loading || !state
+              {activeTab === "settings"
+                ? (loading || !state
                 ? "Loading Claude tool permissions"
-                : `${state.selectedTools.length}/${state.availableTools.length} tools allowed`}
+                : `${state.selectedTools.length}/${state.availableTools.length} tools allowed`)
+                : (claudeMdLoading
+                ? "Loading workspace CLAUDE.md"
+                : claudeMdExists
+                ? "Workspace instructions loaded"
+                : "No CLAUDE.md found yet")}
             </Text>
           </Box>
           <Box style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <UnstyledButton
-              onClick={onEnableAll}
-              disabled={!state}
-              style={{ fontSize: 11, color: state ? "#a1a1aa" : "#52525b", padding: "4px 6px" }}
-            >
-              Enable all
-            </UnstyledButton>
-            <UnstyledButton
-              onClick={onDisableAll}
-              disabled={!state}
-              style={{ fontSize: 11, color: state ? "#a1a1aa" : "#52525b", padding: "4px 6px" }}
-            >
-              Disable all
-            </UnstyledButton>
+            {activeTab === "settings" ? (
+              <>
+                <UnstyledButton
+                  onClick={onEnableAll}
+                  disabled={!state}
+                  style={{ fontSize: 11, color: state ? "#a1a1aa" : "#52525b", padding: "4px 6px" }}
+                >
+                  Enable all
+                </UnstyledButton>
+                <UnstyledButton
+                  onClick={onDisableAll}
+                  disabled={!state}
+                  style={{ fontSize: 11, color: state ? "#a1a1aa" : "#52525b", padding: "4px 6px" }}
+                >
+                  Disable all
+                </UnstyledButton>
+              </>
+            ) : null}
           </Box>
         </Box>
-        {loading || !state ? (
-          <Box style={{ padding: "28px 0 8px" }}>
-            <Text size="sm" c="#a1a1aa">
-              {loading
-                ? "Preparing Claude tool permissions before the session starts."
-                : "Session settings could not be loaded. You can close this and try again."}
+        <Box style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <SessionSettingsTabButton active={activeTab === "settings"} onClick={() => onTabChange("settings")}>
+            Settings
+          </SessionSettingsTabButton>
+          <SessionSettingsTabButton active={activeTab === "claude-md"} onClick={() => onTabChange("claude-md")}>
+            CLAUDE.md
+          </SessionSettingsTabButton>
+        </Box>
+        {activeTab === "settings" ? (
+          loading || !state ? (
+            <Box style={{ padding: "28px 0 8px" }}>
+              <Text size="sm" c="#a1a1aa">
+                {loading
+                  ? "Preparing Claude tool permissions before the session starts."
+                  : "Session settings could not be loaded. You can close this and try again."}
+              </Text>
+            </Box>
+          ) : (
+            <>
+            <Box style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginTop: 12 }}>
+              <MetaField label="Session ID" value={state.sessionId ?? "Unknown"} mono />
+              <MetaField label="Model" value={state.model ?? "Unknown"} mono />
+              <MetaField label="Working Directory" value={state.cwd ?? "Unknown"} mono />
+            </Box>
+            <Text size="xs" fw={600} c="#a1a1aa" mt={14} mb={8}>
+              Built-in Tools ({builtinTools.length})
             </Text>
-          </Box>
-        ) : (
-          <>
-          <Box style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginTop: 12 }}>
-            <MetaField label="Session ID" value={state.sessionId ?? "Unknown"} mono />
-            <MetaField label="Model" value={state.model ?? "Unknown"} mono />
-            <MetaField label="Working Directory" value={state.cwd ?? "Unknown"} mono />
-          </Box>
-          <Text size="xs" fw={600} c="#a1a1aa" mt={14} mb={8}>
-            Built-in Tools ({builtinTools.length})
-          </Text>
-          <Box style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {builtinTools.map((tool) => {
-              const checked = state.selectedTools.includes(tool);
-              return (
-                <label
-                  key={tool}
+            <Box style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {builtinTools.map((tool) => {
+                const checked = state.selectedTools.includes(tool);
+                return (
+                  <label
+                    key={tool}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 10px",
+                      borderRadius: 999,
+                      border: `1px solid ${checked ? "#3f3f46" : "#27272a"}`,
+                      background: checked ? "#18181b" : "#0f1014",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      aria-label={tool}
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => onToggleTool(tool)}
+                      style={{ margin: 0 }}
+                    />
+                    <Text size="xs" c={checked ? "#ffffff" : "#e4e4e7"}>{tool}</Text>
+                  </label>
+                );
+              })}
+            </Box>
+            {mcpGroups.length > 0 ? (
+              <>
+                <UnstyledButton
+                  onClick={onToggleMcpExpanded}
                   style={{
-                    display: "inline-flex",
+                    marginTop: 14,
+                    display: "flex",
                     alignItems: "center",
                     gap: 8,
-                    padding: "6px 10px",
-                    borderRadius: 999,
-                    border: `1px solid ${checked ? "#3f3f46" : "#27272a"}`,
-                    background: checked ? "#18181b" : "#0f1014",
-                    cursor: "pointer",
+                    color: "#a1a1aa",
                   }}
                 >
-                  <input
-                    aria-label={tool}
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => onToggleTool(tool)}
-                    style={{ margin: 0 }}
-                  />
-                  <Text size="xs" c={checked ? "#ffffff" : "#e4e4e7"}>{tool}</Text>
-                </label>
-              );
-            })}
-          </Box>
-          {mcpGroups.length > 0 ? (
-            <>
-              <UnstyledButton
-                onClick={onToggleMcpExpanded}
-                style={{
-                  marginTop: 14,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  color: "#a1a1aa",
-                }}
-              >
-                <ChevronDown size={12} strokeWidth={2} style={{ transform: mcpExpanded ? "rotate(180deg)" : "none" }} />
-                <Text size="xs" fw={600} c="#a1a1aa">
-                  MCP Servers ({mcpGroups.length})
-                </Text>
-              </UnstyledButton>
-              {mcpExpanded ? (
-                <Box style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 8 }}>
-                  {mcpGroups.map((group) => (
-                    <Box key={group.rawServer}>
-                      <Box style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                        <GroupToggleCheckbox
-                          label={group.label}
-                          checked={group.tools.length > 0 && group.tools.every((tool) => state.selectedTools.includes(tool.raw))}
-                          indeterminate={group.tools.some((tool) => state.selectedTools.includes(tool.raw)) && !group.tools.every((tool) => state.selectedTools.includes(tool.raw))}
-                          onChange={(checked) => toggleGroupTools(group.tools.map((tool) => tool.raw), checked)}
-                        />
-                      </Box>
-                      {group.tools.length > 0 ? (
-                        <Box style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                          {group.tools.map((tool) => {
-                            const checked = state.selectedTools.includes(tool.raw);
-                            return (
-                              <label
-                                key={tool.raw}
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 8,
-                                  padding: "6px 10px",
-                                  borderRadius: 999,
-                                  border: `1px solid ${checked ? "#3f3f46" : "#27272a"}`,
-                                  background: checked ? "#18181b" : "#0f1014",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                <input
-                                  aria-label={tool.label}
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() => onToggleTool(tool.raw)}
-                                  style={{ margin: 0 }}
-                                />
-                                <Text size="xs" c={checked ? "#ffffff" : "#e4e4e7"}>{tool.label}</Text>
-                              </label>
-                            );
-                          })}
+                  <ChevronDown size={12} strokeWidth={2} style={{ transform: mcpExpanded ? "rotate(180deg)" : "none" }} />
+                  <Text size="xs" fw={600} c="#a1a1aa">
+                    MCP Servers ({mcpGroups.length})
+                  </Text>
+                </UnstyledButton>
+                {mcpExpanded ? (
+                  <Box style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 8 }}>
+                    {mcpGroups.map((group) => (
+                      <Box key={group.rawServer}>
+                        <Box style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                          <GroupToggleCheckbox
+                            label={group.label}
+                            checked={group.tools.length > 0 && group.tools.every((tool) => state.selectedTools.includes(tool.raw))}
+                            indeterminate={group.tools.some((tool) => state.selectedTools.includes(tool.raw)) && !group.tools.every((tool) => state.selectedTools.includes(tool.raw))}
+                            onChange={(checked) => toggleGroupTools(group.tools.map((tool) => tool.raw), checked)}
+                          />
                         </Box>
-                      ) : (
-                        <Text size="xs" c="#52525b">No tools exposed for this MCP in the current Claude session.</Text>
-                      )}
-                    </Box>
-                  ))}
-                </Box>
-              ) : null}
+                        {group.tools.length > 0 ? (
+                          <Box style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                            {group.tools.map((tool) => {
+                              const checked = state.selectedTools.includes(tool.raw);
+                              return (
+                                <label
+                                  key={tool.raw}
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 8,
+                                    padding: "6px 10px",
+                                    borderRadius: 999,
+                                    border: `1px solid ${checked ? "#3f3f46" : "#27272a"}`,
+                                    background: checked ? "#18181b" : "#0f1014",
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  <input
+                                    aria-label={tool.label}
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => onToggleTool(tool.raw)}
+                                    style={{ margin: 0 }}
+                                  />
+                                  <Text size="xs" c={checked ? "#ffffff" : "#e4e4e7"}>{tool.label}</Text>
+                                </label>
+                              );
+                            })}
+                          </Box>
+                        ) : (
+                          <Text size="xs" c="#52525b">No tools exposed for this MCP in the current Claude session.</Text>
+                        )}
+                      </Box>
+                    ))}
+                  </Box>
+                ) : null}
+              </>
+            ) : null}
             </>
-          ) : null}
+          )
+        ) : (
+          <>
+            <Box style={{ marginTop: 14 }}>
+              {claudeMdLoading ? (
+                <Text size="sm" c="#a1a1aa">Loading CLAUDE.md…</Text>
+              ) : claudeMdLoadError ? (
+                <Text size="sm" c="#fda4af">{claudeMdLoadError}</Text>
+              ) : claudeMdViewMode === "edit" ? (
+                <>
+                  <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
+                    <Text size="xs" c="#71717a">
+                      {claudeMdExists
+                        ? "Edit the workspace CLAUDE.md file."
+                        : "No CLAUDE.md file exists yet. Start typing and save to create it."}
+                    </Text>
+                    <Box style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                      <ModeIconButton
+                        active={claudeMdViewMode === "edit"}
+                        label="Edit mode"
+                        onClick={() => onClaudeMdViewModeChange("edit")}
+                      >
+                        <Pen size={14} strokeWidth={1.8} />
+                      </ModeIconButton>
+                      <ModeIconButton
+                        active={claudeMdViewMode === "preview"}
+                        label="Preview"
+                        onClick={() => onClaudeMdViewModeChange("preview")}
+                      >
+                        <Eye size={14} strokeWidth={1.8} />
+                      </ModeIconButton>
+                    </Box>
+                  </Box>
+                  <textarea
+                    aria-label="CLAUDE.md editor"
+                    value={claudeMdContent}
+                    onChange={(event) => onClaudeMdChange(event.currentTarget.value)}
+                    placeholder="Write workspace instructions for Claude here..."
+                    style={{
+                      width: "100%",
+                      minHeight: 340,
+                      background: "#0b0d12",
+                      border: "1px solid #2a3243",
+                      borderRadius: 12,
+                      color: "#e4e4e7",
+                      padding: 14,
+                      resize: "vertical",
+                      outline: "none",
+                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace",
+                      fontSize: 13,
+                      lineHeight: 1.6,
+                    }}
+                  />
+                </>
+              ) : (
+                <>
+                  <Box style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                    <Box style={{ display: "flex", gap: 8 }}>
+                      <ModeIconButton
+                        active={claudeMdViewMode === "edit"}
+                        label="Edit mode"
+                        onClick={() => onClaudeMdViewModeChange("edit")}
+                      >
+                        <Pen size={14} strokeWidth={1.8} />
+                      </ModeIconButton>
+                      <ModeIconButton
+                        active={claudeMdViewMode === "preview"}
+                        label="Preview"
+                        onClick={() => onClaudeMdViewModeChange("preview")}
+                      >
+                        <Eye size={14} strokeWidth={1.8} />
+                      </ModeIconButton>
+                    </Box>
+                  </Box>
+                  <Box
+                    style={{
+                      minHeight: 340,
+                      border: "1px solid #2a3243",
+                      borderRadius: 12,
+                      background: "#0b0d12",
+                      padding: 18,
+                      overflow: "auto",
+                    }}
+                  >
+                    {claudeMdContent.trim() ? (
+                      <Box className="claude-md-preview">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {claudeMdContent}
+                        </ReactMarkdown>
+                      </Box>
+                    ) : (
+                      <Text size="sm" c="#71717a">Nothing to preview yet.</Text>
+                    )}
+                  </Box>
+                </>
+              )}
+            </Box>
           </>
         )}
-        <Box style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+        <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 16 }}>
+          <Box />
+          <Box style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           {onCancel ? (
             <UnstyledButton
               onClick={onCancel}
@@ -2375,13 +2595,13 @@ function SessionSettingsOverlay({
           ) : null}
           <UnstyledButton
             onClick={onSave}
-            disabled={required && loading}
+            disabled={(required && loading) || saving}
             style={{
               minWidth: 96,
               height: 34,
               borderRadius: 8,
-              background: required && loading ? "#27272a" : "#f4f4f5",
-              color: required && loading ? "#52525b" : "#0c0c0f",
+              background: (required && loading) || saving ? "#27272a" : "#f4f4f5",
+              color: (required && loading) || saving ? "#52525b" : "#0c0c0f",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -2389,8 +2609,9 @@ function SessionSettingsOverlay({
               fontWeight: 600,
             }}
           >
-            Save
+            {saving ? "Saving..." : "Save"}
           </UnstyledButton>
+          </Box>
         </Box>
       </Box>
     </Box>
@@ -2405,6 +2626,71 @@ function MetaField({ label, value, mono }: { label: string; value: string; mono?
         {value}
       </Text>
     </Box>
+  );
+}
+
+function SessionSettingsTabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <UnstyledButton
+      onClick={onClick}
+      style={{
+        minWidth: 110,
+        height: 34,
+        padding: "0 12px",
+        borderRadius: 9,
+        border: `1px solid ${active ? "#3a3a45" : "#27272a"}`,
+        background: active ? "#1a1b21" : "#111115",
+        color: active ? "#f4f4f5" : "#a1a1aa",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 12,
+        fontWeight: 600,
+      }}
+    >
+      {children}
+    </UnstyledButton>
+  );
+}
+
+function ModeIconButton({
+  active,
+  label,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <UnstyledButton
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      style={{
+        width: 34,
+        height: 34,
+        borderRadius: 8,
+        border: `1px solid ${active ? "#44444f" : "#30303a"}`,
+        background: active ? "#1a1b21" : "#111115",
+        color: active ? "#f4f4f5" : "#a1a1aa",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      {children}
+    </UnstyledButton>
   );
 }
 
