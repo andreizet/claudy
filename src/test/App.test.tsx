@@ -40,15 +40,43 @@ vi.mock("../views/ChatView", () => ({
     workspace,
     onBack,
     mainHeader,
+    onWorkspaceChange,
+    selectedSessionId,
+    onActiveSessionChange,
   }: {
     workspace: DiscoveredWorkspace;
     onBack: () => void;
     mainHeader?: React.ReactNode;
+    onWorkspaceChange?: (workspace: DiscoveredWorkspace) => void;
+    selectedSessionId?: string | null;
+    onActiveSessionChange?: (sessionId: string | null) => void;
   }) => (
     <div>
       <div data-testid="chat-header">{mainHeader}</div>
       <div>chat-{workspace.display_name}</div>
+      <div>session-count:{workspace.sessions.length}</div>
+      <div>selected-session:{selectedSessionId ?? "none"}</div>
       <button onClick={onBack}>back-to-home</button>
+      <button onClick={() => onActiveSessionChange?.(workspace.sessions[0]?.id ?? null)}>select-first-session</button>
+      <button onClick={() => onActiveSessionChange?.(workspace.sessions[1]?.id ?? null)}>select-second-session</button>
+      <button
+        onClick={() =>
+          onWorkspaceChange?.({
+            ...workspace,
+            sessions: [
+              {
+                id: "session-new",
+                file_path: "/tmp/session-new.jsonl",
+                modified_at: `${Math.floor(Date.now() / 1000)}`,
+                first_message: "New in progress session",
+              },
+              ...workspace.sessions,
+            ],
+          })
+        }
+      >
+        workspace-update
+      </button>
     </div>
   ),
 }));
@@ -175,5 +203,46 @@ describe("App tab and session flow", () => {
 
     await waitFor(() => expect(screen.getByText("home-view")).toBeInTheDocument());
     expect(screen.queryByText("chat-claudy")).not.toBeInTheDocument();
+  });
+
+  it("keeps workspace session updates across tab switches", async () => {
+    renderWithProviders(<App />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-claudy" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-claudy" }));
+    await waitFor(() => expect(screen.getByText("chat-claudy")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "workspace-update" }));
+    expect(screen.getByText("session-count:3")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle("New tab"));
+    await waitFor(() => expect(screen.getByText("home-view")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("claudy - Implement the login flow"));
+
+    await waitFor(() => expect(screen.getByText("chat-claudy")).toBeInTheDocument());
+    expect(screen.getByText("session-count:3")).toBeInTheDocument();
+  });
+
+  it("preserves selected session per tab for the same workspace", async () => {
+    renderWithProviders(<App />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-claudy" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-claudy" }));
+    await waitFor(() => expect(screen.getByText("chat-claudy")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "select-first-session" }));
+    expect(screen.getByText("selected-session:session-alpha")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle("New tab"));
+    await waitFor(() => expect(screen.getByText("home-view")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-claudy" }));
+    await waitFor(() => expect(screen.getByText("chat-claudy")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "select-second-session" }));
+    expect(screen.getByText("selected-session:session-beta")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByText("claudy - Implement the login flow")[0]);
+    await waitFor(() => expect(screen.getByText("selected-session:session-alpha")).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText("claudy - Implement the login flow")[1]);
+    await waitFor(() => expect(screen.getByText("selected-session:session-beta")).toBeInTheDocument());
   });
 });

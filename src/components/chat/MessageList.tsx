@@ -1,5 +1,6 @@
-import { ComponentPropsWithoutRef, forwardRef, memo, useEffect, useMemo, useRef, useState } from "react";
+import { ComponentPropsWithoutRef, MouseEvent, ReactNode, forwardRef, memo, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import {
   ChevronDown,
@@ -9,6 +10,7 @@ import {
   Brain,
   Terminal,
   Wrench,
+  Copy,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -625,7 +627,9 @@ function ThinkingCard({ thinking }: { thinking: string }) {
 
 function AssistantText({ text }: { text: string }) {
   return (
-    <Box className="md-body" style={{ color: "#d4d4d8", fontSize: 14, lineHeight: 1.75, wordBreak: "break-word", display: "flow-root" }}>
+    <Box style={{ position: "relative", maxWidth: "88%" }}>
+      <CopyButton content={text} label="Copy assistant message" successMessage="Assistant message copied" />
+      <Box className="md-body" style={{ color: "#d4d4d8", fontSize: 14, lineHeight: 1.75, wordBreak: "break-word", display: "flow-root" }}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -698,6 +702,7 @@ function AssistantText({ text }: { text: string }) {
       >
         {text}
       </ReactMarkdown>
+      </Box>
     </Box>
   );
 }
@@ -795,79 +800,115 @@ function ToolCard({ block, result }: { block: ContentBlockToolUse; result?: { co
                     edit {i + 1} of {edits.length}
                   </Text>
                 )}
-                <DiffView oldStr={edit.old_string} newStr={edit.new_string} />
+                <ContentSection
+                  copyContent={buildEditCopyContent(edit)}
+                  copyLabel={`Copy ${label} edit ${i + 1}`}
+                  copySuccessMessage={`${label} edit copied`}
+                >
+                  <DiffView oldStr={edit.old_string} newStr={edit.new_string} />
+                </ContentSection>
               </Box>
             ))
           ) : isBash ? (
             <>
               {fullCommand && (
-                <Box
-                  component="pre"
-                  style={{
-                    margin: 0,
-                    padding: "10px 14px",
-                    fontSize: 12,
-                    fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace',
-                    color: "#a1a1aa",
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-all",
-                    borderBottom: result?.content ? "1px solid #27272a" : undefined,
-                    background: "#141417",
-                  }}
+                <ContentSection
+                  copyContent={fullCommand}
+                  copyLabel={`Copy ${label} command`}
+                  copySuccessMessage={`${label} command copied`}
+                  borderBottom={!!result?.content}
                 >
-                  <span style={{ color: "#3f3f46", userSelect: "none" }}>$ </span>{fullCommand}
-                </Box>
+                  <Box
+                    component="pre"
+                    style={{
+                      margin: 0,
+                      padding: "10px 14px",
+                      fontSize: 12,
+                      fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace',
+                      color: "#a1a1aa",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-all",
+                      background: "#141417",
+                    }}
+                  >
+                    <span style={{ color: "#3f3f46", userSelect: "none" }}>$ </span>{fullCommand}
+                  </Box>
+                </ContentSection>
               )}
               {result?.content && (
-                <Box
-                  component="pre"
-                  style={{
-                    margin: 0,
-                    padding: "10px 14px",
-                    fontSize: 12,
-                    fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace',
-                    color: result.isError ? "#f87171" : "#71717a",
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-all",
-                    maxHeight: 320,
-                    overflowY: "auto",
-                    background: "#0f0f12",
-                  }}
+                <ContentSection
+                  copyContent={result.content}
+                  copyLabel={`Copy ${label} output`}
+                  copySuccessMessage={`${label} output copied`}
                 >
-                  {result.content}
-                </Box>
+                  <Box
+                    component="pre"
+                    style={{
+                      margin: 0,
+                      padding: "10px 14px",
+                      fontSize: 12,
+                      fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace',
+                      color: result.isError ? "#f87171" : "#71717a",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-all",
+                      maxHeight: 320,
+                      overflowY: "auto",
+                      background: "#0f0f12",
+                    }}
+                  >
+                    {result.content}
+                  </Box>
+                </ContentSection>
               )}
             </>
           ) : (
             <>
               {hasParams && (
-                <Box
-                  component="pre"
-                  style={{
-                    margin: 0,
-                    padding: "10px 14px",
-                    fontSize: 12,
-                    fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace',
-                    color: "#a1a1aa",
-                    whiteSpace: "pre",
-                    overflowX: "auto",
-                    borderBottom: result?.content ? "1px solid #27272a" : undefined,
-                    background: "#141417",
-                  }}
+                <ContentSection
+                  copyContent={JSON.stringify(block.input, null, 2)}
+                  copyLabel={`Copy ${label} input`}
+                  copySuccessMessage={`${label} input copied`}
+                  borderBottom={!!result?.content}
                 >
-                  {JSON.stringify(block.input, null, 2)}
-                </Box>
+                  <Box
+                    component="pre"
+                    style={{
+                      margin: 0,
+                      padding: "10px 14px",
+                      fontSize: 12,
+                      fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace',
+                      color: "#a1a1aa",
+                      whiteSpace: "pre",
+                      overflowX: "auto",
+                      background: "#141417",
+                    }}
+                  >
+                    {JSON.stringify(block.input, null, 2)}
+                  </Box>
+                </ContentSection>
               )}
               {result?.content && (
                 result.isError ? (
-                  <Box component="pre" style={{ margin: 0, padding: "10px 14px", fontSize: 12, fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace', color: "#f87171", whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 320, overflowY: "auto", background: "#0f0f12" }}>
-                    {result.content}
-                  </Box>
+                  <ContentSection
+                    copyContent={result.content}
+                    copyLabel={`Copy ${label} output`}
+                    copySuccessMessage={`${label} output copied`}
+                  >
+                    <Box component="pre" style={{ margin: 0, padding: "10px 14px", fontSize: 12, fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace', color: "#f87171", whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 320, overflowY: "auto", background: "#0f0f12" }}>
+                      {result.content}
+                    </Box>
+                  </ContentSection>
                 ) : (
-                  <ReadOutput
-                    content={result.content}
-                    filePath={typeof block.input?.file_path === "string" ? block.input.file_path as string : typeof block.input?.path === "string" ? block.input.path as string : undefined}
-                  />
+                  <ContentSection
+                    copyContent={result.content}
+                    copyLabel={`Copy ${label} output`}
+                    copySuccessMessage={`${label} output copied`}
+                  >
+                    <ReadOutput
+                      content={result.content}
+                      filePath={typeof block.input?.file_path === "string" ? block.input.file_path as string : typeof block.input?.path === "string" ? block.input.path as string : undefined}
+                    />
+                  </ContentSection>
                 )
               )}
             </>
@@ -954,6 +995,106 @@ function ToolIcon({ name }: { name: string }) {
     return <FileText size={13} strokeWidth={2} style={{ flexShrink: 0, color }} />;
   }
   return <Wrench size={13} strokeWidth={2} style={{ flexShrink: 0, color }} />;
+}
+
+function ContentSection({
+  children,
+  copyContent,
+  copyLabel,
+  copySuccessMessage,
+  borderBottom = false,
+}: {
+  children: ReactNode;
+  copyContent: string;
+  copyLabel: string;
+  copySuccessMessage: string;
+  borderBottom?: boolean;
+}) {
+  return (
+    <Box style={{ position: "relative", borderBottom: borderBottom ? "1px solid #27272a" : undefined }}>
+      <CopyButton
+        content={copyContent}
+        label={copyLabel}
+        successMessage={copySuccessMessage}
+        compact
+      />
+      <Box style={{ paddingTop: 34 }}>
+        {children}
+      </Box>
+    </Box>
+  );
+}
+
+function CopyButton({
+  content,
+  label,
+  successMessage,
+  compact = false,
+}: {
+  content: string;
+  label: string;
+  successMessage: string;
+  compact?: boolean;
+}) {
+  const handleCopy = async (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(content);
+      notifications.show({
+        color: "green",
+        title: "Copied to clipboard",
+        message: successMessage,
+      });
+    } catch {
+      notifications.show({
+        color: "red",
+        title: "Copy failed",
+        message: "Clipboard access is not available.",
+      });
+    }
+  };
+
+  return (
+    <Box
+      component="button"
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={handleCopy}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: compact ? 24 : 28,
+        height: compact ? 24 : 28,
+        borderRadius: 7,
+        border: "1px solid #2f2f36",
+        background: compact ? "#141417" : "rgba(20,20,24,0.92)",
+        color: "#8b8b97",
+        cursor: "pointer",
+        padding: 0,
+        flexShrink: 0,
+        marginLeft: compact ? undefined : "auto",
+        marginBottom: compact ? undefined : 8,
+        position: "absolute",
+        top: 8,
+        right: 8,
+        zIndex: 1,
+      }}
+    >
+      <Copy size={13} strokeWidth={2} />
+    </Box>
+  );
+}
+
+function buildEditCopyContent(edit: { old_string: string; new_string: string }): string {
+  return [
+    "old_string:",
+    edit.old_string,
+    "",
+    "new_string:",
+    edit.new_string,
+  ].join("\n");
 }
 
 // ── Timing indicator ──────────────────────────────────────────────────────────

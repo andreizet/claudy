@@ -43,6 +43,9 @@ interface Props {
   onBack: () => void;
   mainHeader?: React.ReactNode;
   onSessionTitleChange?: (title: string | null) => void;
+  onWorkspaceChange?: (workspace: DiscoveredWorkspace) => void;
+  selectedSessionId?: string | null;
+  onActiveSessionChange?: (sessionId: string | null) => void;
 }
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 const PINNED_SESSION_STORAGE_KEY = "claudy.pinnedSessions";
@@ -219,7 +222,16 @@ function findActiveTrigger(value: string, caret: number) {
   };
 }
 
-export default function ChatView({ workspace, accountInfo, onBack, mainHeader, onSessionTitleChange }: Props) {
+export default function ChatView({
+  workspace,
+  accountInfo,
+  onBack,
+  mainHeader,
+  onSessionTitleChange,
+  onWorkspaceChange,
+  selectedSessionId,
+  onActiveSessionChange,
+}: Props) {
   const queryClient = useQueryClient();
   const [sessionItems, setSessionItems] = useState<DiscoveredSession[]>(workspace.sessions);
   const [activeSession, setActiveSession] = useState<DiscoveredSession | null>(workspace.sessions[0] ?? null);
@@ -268,6 +280,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
   const creatingInitialSessionRef = useRef(creatingInitialSession);
   const pendingSendRef = useRef<PendingSendContext | null>(null);
   const streamBlocksRef = useRef<ContentBlock[]>([]);
+  const configuringSession = !activeSession && initializingNewSession;
 
   useEffect(() => {
     streamBlocksRef.current = streamBlocks;
@@ -415,6 +428,42 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     });
   };
 
+  const publishWorkspaceSessions = (sessions: DiscoveredSession[]) => {
+    onWorkspaceChange?.({
+      ...workspace,
+      sessions,
+    });
+  };
+
+  const updateSessionItems = (updater: (current: DiscoveredSession[]) => DiscoveredSession[]) => {
+    setSessionItems((current) => {
+      const next = updater(current);
+      publishWorkspaceSessions(next);
+      return next;
+    });
+  };
+
+  const mergeSessionItem = (session: DiscoveredSession) => {
+    let mergedSession = session;
+    updateSessionItems((current) => {
+      const index = current.findIndex((item) => item.id === session.id);
+      const next = current.slice();
+      if (index >= 0) {
+        mergedSession = {
+          ...next[index],
+          ...session,
+        };
+        next[index] = mergedSession;
+      } else {
+        mergedSession = session;
+        next.unshift(mergedSession);
+      }
+      next.sort((a, b) => Number(b.modified_at || 0) - Number(a.modified_at || 0));
+      return next;
+    });
+    return mergedSession;
+  };
+
   const handleStartNewSession = () => {
     setActiveSession(null);
     setMessages([]);
@@ -434,7 +483,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     try {
       await invoke("delete_session_file", { filePath: session.file_path });
       let nextSessions: DiscoveredSession[] = [];
-      setSessionItems((current) => {
+      updateSessionItems((current) => {
         nextSessions = current.filter((item) => item.id !== session.id);
         return nextSessions;
       });
@@ -447,7 +496,9 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
         const pinnedRemaining = nextPinnedId
           ? nextSessions.find((item) => item.id === nextPinnedId) ?? null
           : null;
-        return pinnedRemaining ?? nextSessions[0] ?? null;
+        const nextActive = pinnedRemaining ?? nextSessions[0] ?? null;
+        onActiveSessionChange?.(nextActive?.id ?? null);
+        return nextActive;
       });
       setSessionActivityById((current) => {
         if (!current[session.id]) return current;
@@ -495,10 +546,13 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
     }
     setPinnedSessionId(pinnedId);
     const pinnedSession = pinnedId ? sessions.find((session) => session.id === pinnedId) ?? null : null;
-    setActiveSession(pinnedSession ?? sessions[0] ?? null);
+    const explicitSession = selectedSessionId
+      ? sessions.find((session) => session.id === selectedSessionId) ?? null
+      : null;
+    setActiveSession(explicitSession ?? pinnedSession ?? sessions[0] ?? null);
     const persistedPolicy = loadPersistedToolPolicy();
     const cachedInventory = loadToolInventoryCache();
-    const selectedSession = pinnedSession ?? sessions[0] ?? null;
+    const selectedSession = explicitSession ?? pinnedSession ?? sessions[0] ?? null;
     setSessionToolState(
       persistedPolicy || cachedInventory
         ? {
@@ -524,7 +578,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
       const nextEntries = Object.entries(current).filter(([sessionId]) => validSessionIds.has(sessionId));
       return nextEntries.length === Object.keys(current).length ? current : Object.fromEntries(nextEntries);
     });
-  }, [workspace.encoded_name, workspace.sessions]);
+  }, [selectedSessionId, workspace.encoded_name, workspace.sessions]);
 
   const activeSessionDisplayTitle = activeSession ? getSessionDisplayTitle(activeSession) : null;
 
@@ -722,13 +776,20 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
   };
 
   const loadMessages = (filePath: string) => {
+    if (!filePath) {
+      setMessages([]);
+      return;
+    }
     invoke<unknown[]>("get_session_messages", { filePath })
       .then((raw) => setMessages(raw as JsonlRecord[]))
       .catch(console.error);
   };
 
   useEffect(() => {
-    if (!activeSession) return;
+    if (!activeSession?.file_path) {
+      setMessages([]);
+      return;
+    }
     const sessionId = activeSession.id;
     setLoadingMessages(true);
     setLoadingSessionId(sessionId);
@@ -743,7 +804,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
         setLoadingMessages(false);
         setLoadingSessionId((current) => (current === sessionId ? null : current));
       });
-  }, [activeSession?.file_path]);
+  }, [activeSession?.file_path, activeSession?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -911,6 +972,42 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
             workspacePath: workspace.decoded_path,
           });
           const sessionId = typeof rec.session_id === "string" ? rec.session_id : activeSessionRef.current?.id ?? null;
+          if (sessionId) {
+            pendingSendRef.current = pendingSendRef.current
+              ? { ...pendingSendRef.current, sessionId }
+              : null;
+            const optimisticSession = mergeSessionItem({
+              id: sessionId,
+              file_path: activeSessionRef.current?.id === sessionId ? activeSessionRef.current.file_path : "",
+              modified_at: `${Math.floor(Date.now() / 1000)}`,
+              first_message: pendingSendRef.current?.message ?? activeSessionRef.current?.first_message ?? "New session",
+            });
+            if (creatingInitialSessionRef.current || !activeSessionRef.current || activeSessionRef.current.id !== sessionId) {
+              activeSessionRef.current = optimisticSession;
+              setActiveSession(optimisticSession);
+              onActiveSessionChange?.(optimisticSession.id);
+            }
+            setSessionActivityById((current) => ({
+              ...current,
+              [sessionId]: "generating",
+            }));
+            invoke<DiscoveredWorkspace>("describe_workspace", {
+              workspacePath: workspace.decoded_path,
+            })
+              .then((refreshed) => {
+                if (!refreshed || !Array.isArray(refreshed.sessions)) return;
+                if (!refreshed.sessions.some((item) => item.id === sessionId)) return;
+                publishWorkspaceSessions(refreshed.sessions);
+                setSessionItems(refreshed.sessions);
+                const refreshedSession = refreshed.sessions.find((item) => item.id === sessionId) ?? null;
+                if (refreshedSession && activeSessionRef.current?.id === sessionId) {
+                  activeSessionRef.current = refreshedSession;
+                  setActiveSession(refreshedSession);
+                  onActiveSessionChange?.(refreshedSession.id);
+                }
+              })
+              .catch(console.error);
+          }
           const sessionPolicy = loadSessionToolPolicy(sessionId);
           const defaultPolicy = loadDefaultToolPolicy();
           const nextState = {
@@ -961,9 +1058,11 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
           const refreshed = await invoke<DiscoveredWorkspace>("describe_workspace", {
             workspacePath: workspace.decoded_path,
           });
+          publishWorkspaceSessions(refreshed.sessions);
           setSessionItems(refreshed.sessions);
           const nextActive = refreshed.sessions[0] ?? null;
           setActiveSession(nextActive);
+          onActiveSessionChange?.(nextActive?.id ?? null);
           if (nextActive) {
             loadMessages(nextActive.file_path);
           }
@@ -1081,7 +1180,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
 
   const handleSend = () => {
     const text = input.trim();
-    if ((!text && selectedFileRefs.length === 0) || streaming || (!activeSession && (!sessionToolState || initializingNewSession))) return;
+    if ((!text && selectedFileRefs.length === 0) || streaming || configuringSession || (!activeSession && !sessionToolState)) return;
     if (text.startsWith("/") && selectedFileRefs.length === 0) {
       const commandName = text.slice(1).trim().split(/\s+/, 1)[0] ?? "";
       const commandKind = slashCommandKindByName.get(commandName);
@@ -1384,6 +1483,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
                   onClick={() => {
                     activeSessionRef.current = s;
                     setActiveSession(s);
+                    onActiveSessionChange?.(s.id);
                     clearCompletedSessionActivity(s.id);
                   }}
                   onPin={() => handlePinSession(s)}
@@ -1503,7 +1603,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
                   border: "1px solid #2a3243",
                   borderRadius: 14,
                   padding: "10px 14px",
-                  opacity: streaming || loadingMessages ? 0.5 : 1,
+                  opacity: streaming || loadingMessages || configuringSession ? 0.5 : 1,
                   boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
                 }}
               >
@@ -1521,7 +1621,7 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
                 <textarea
                   ref={textareaRef}
                   value={input}
-                  disabled={streaming || loadingMessages}
+                  disabled={streaming || loadingMessages || configuringSession}
                   onChange={(e) => {
                     setInput(e.target.value);
                     startTransition(() => {
@@ -1669,12 +1769,13 @@ export default function ChatView({ workspace, accountInfo, onBack, mainHeader, o
             <Box style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
               <UnstyledButton
                 onClick={handleSend}
-                disabled={streaming || loadingMessages || sessionSettingsOpen || (!activeSession && initializingNewSession) || (!input.trim() && selectedFileRefs.length === 0)}
+                aria-label="Send message"
+                disabled={streaming || loadingMessages || sessionSettingsOpen || configuringSession || (!input.trim() && selectedFileRefs.length === 0)}
                 style={{
                   width: 36,
                   height: 36,
                   borderRadius: 8,
-                  background: streaming || loadingMessages || sessionSettingsOpen || (!activeSession && initializingNewSession) || (!input.trim() && selectedFileRefs.length === 0) ? "#27272a" : "#f4f4f5",
+                  background: streaming || loadingMessages || sessionSettingsOpen || configuringSession || (!input.trim() && selectedFileRefs.length === 0) ? "#27272a" : "#f4f4f5",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",

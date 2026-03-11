@@ -6,6 +6,16 @@ import { JsonlRecord } from "../../../types";
 
 import MessageList from "../../../components/chat/MessageList";
 
+const { notificationsShowMock } = vi.hoisted(() => ({
+  notificationsShowMock: vi.fn(),
+}));
+
+vi.mock("@mantine/notifications", () => ({
+  notifications: {
+    show: notificationsShowMock,
+  },
+}));
+
 function makeMessages(count: number): JsonlRecord[] {
   return Array.from({ length: count }).map((_, index) => ({
     type: index % 2 === 0 ? "user" : "assistant",
@@ -49,6 +59,13 @@ function renderMessageList(node: React.ReactElement) {
 describe("MessageList behavior", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    notificationsShowMock.mockReset();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+    });
   });
 
   it("scrolls to bottom when the session changes", async () => {
@@ -181,5 +198,89 @@ describe("MessageList behavior", () => {
     setupViewport();
 
     expect(screen.queryByText(/Base directory for this skill/)).not.toBeInTheDocument();
+  });
+
+  it("copies assistant markdown and shows a toast", async () => {
+    const writeTextMock = vi.mocked(navigator.clipboard.writeText);
+
+    renderMessageList(
+      <MessageList
+        sessionId="session-copy-assistant"
+        messages={[
+          {
+            type: "assistant",
+            timestamp: "2026-03-10T08:10:00Z",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "## Title\n\n- item" }],
+            },
+          },
+        ]}
+      />
+    );
+    setupViewport();
+
+    fireEvent.click(screen.getByLabelText("Copy assistant message"));
+
+    await waitFor(() => {
+      expect(writeTextMock).toHaveBeenCalledWith("## Title\n\n- item");
+      expect(notificationsShowMock).toHaveBeenCalledWith(expect.objectContaining({
+        title: "Copied to clipboard",
+        message: "Assistant message copied",
+      }));
+    });
+  });
+
+  it("copies expanded tool section content and shows a toast", async () => {
+    const writeTextMock = vi.mocked(navigator.clipboard.writeText);
+
+    renderMessageList(
+      <MessageList
+        sessionId="session-copy-tool"
+        messages={[
+          {
+            type: "user",
+            timestamp: "2026-03-10T08:11:00Z",
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "tool-1",
+                  content: "first line\nsecond line",
+                },
+              ],
+            },
+          },
+          {
+            type: "assistant",
+            timestamp: "2026-03-10T08:12:00Z",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "tool-1",
+                  name: "Bash",
+                  input: { command: "npm test" },
+                },
+              ],
+            },
+          },
+        ]}
+      />
+    );
+    setupViewport();
+
+    fireEvent.click(screen.getByText("Run command"));
+    fireEvent.click(screen.getByLabelText("Copy Run command command"));
+
+    await waitFor(() => {
+      expect(writeTextMock).toHaveBeenCalledWith("npm test");
+      expect(notificationsShowMock).toHaveBeenCalledWith(expect.objectContaining({
+        title: "Copied to clipboard",
+        message: "Run command command copied",
+      }));
+    });
   });
 });

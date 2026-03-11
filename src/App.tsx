@@ -15,7 +15,7 @@ type HomeTabLabel = "Projects" | "Usage" | "Settings";
 
 type AppTab =
   | { id: string; kind: "home"; viewLabel: HomeTabLabel }
-  | { id: string; kind: "chat"; workspace: DiscoveredWorkspace; sessionTitle: string | null };
+  | { id: string; kind: "chat"; workspace: DiscoveredWorkspace; sessionTitle: string | null; selectedSessionId: string | null };
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 
 interface ClaudeSessionInit {
@@ -80,12 +80,14 @@ function loadStoredTabs(): { tabs: AppTab[]; activeTabId: string | null } {
         candidate.kind === "chat"
         && isDiscoveredWorkspace(candidate.workspace)
         && (typeof candidate.sessionTitle === "string" || candidate.sessionTitle === null || candidate.sessionTitle === undefined)
+        && (typeof candidate.selectedSessionId === "string" || candidate.selectedSessionId === null || candidate.selectedSessionId === undefined)
       ) {
         return [{
           id: candidate.id,
           kind: "chat",
           workspace: candidate.workspace,
           sessionTitle: candidate.sessionTitle ?? null,
+          selectedSessionId: candidate.selectedSessionId ?? candidate.workspace.sessions[0]?.id ?? null,
         }];
       }
       return [];
@@ -125,7 +127,13 @@ export default function App() {
 
   const openWorkspaceInNewTab = (workspace: DiscoveredWorkspace) => {
     const id = createTabId();
-    setTabs([{ id, kind: "chat", workspace, sessionTitle: workspace.sessions[0]?.first_message ?? null }]);
+    setTabs([{
+      id,
+      kind: "chat",
+      workspace,
+      sessionTitle: workspace.sessions[0]?.first_message ?? null,
+      selectedSessionId: workspace.sessions[0]?.id ?? null,
+    }]);
     setActiveTabId(id);
   };
 
@@ -133,7 +141,13 @@ export default function App() {
     setTabs((prev) =>
       prev.map((t) =>
         t.id === activeTabId
-          ? { id: activeTabId, kind: "chat", workspace, sessionTitle: workspace.sessions[0]?.first_message ?? null }
+          ? {
+              id: activeTabId,
+              kind: "chat",
+              workspace,
+              sessionTitle: workspace.sessions[0]?.first_message ?? null,
+              selectedSessionId: workspace.sessions[0]?.id ?? null,
+            }
           : t
       )
     );
@@ -152,6 +166,50 @@ export default function App() {
       return changed ? next : prev;
     });
   }, []);
+
+  const updateTabSelectedSession = useCallback((tabId: string, selectedSessionId: string | null) => {
+    setTabs((prev) => {
+      let changed = false;
+      const next = prev.map((tab) => {
+        if (tab.id !== tabId || tab.kind !== "chat" || tab.selectedSessionId === selectedSessionId) {
+          return tab;
+        }
+        changed = true;
+        return { ...tab, selectedSessionId };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
+  const updateTabWorkspace = useCallback((tabId: string, workspace: DiscoveredWorkspace) => {
+    setTabs((prev) => {
+      let changed = false;
+      const next = prev.map((tab) => {
+        if (tab.id !== tabId || tab.kind !== "chat") {
+          return tab;
+        }
+        changed = true;
+        return {
+          ...tab,
+          workspace,
+          selectedSessionId: workspace.sessions.some((session) => session.id === tab.selectedSessionId)
+            ? tab.selectedSessionId
+            : workspace.sessions[0]?.id ?? null,
+        };
+      });
+      return changed ? next : prev;
+    });
+    queryClient.setQueryData<DiscoveredWorkspace[]>(["existing-sessions"], (current) => {
+      if (!current) return [workspace];
+      const index = current.findIndex((item) => item.encoded_name === workspace.encoded_name);
+      if (index === -1) {
+        return [workspace, ...current];
+      }
+      const next = current.slice();
+      next[index] = workspace;
+      return next;
+    });
+  }, [queryClient]);
 
   const updateHomeTabLabel = useCallback((tabId: string, viewLabel: HomeTabLabel) => {
     setTabs((prev) => {
@@ -458,6 +516,9 @@ export default function App() {
           accountInfo={accountInfo}
           mainHeader={tabHeader}
           onSessionTitleChange={handleSessionTitleChange}
+          onWorkspaceChange={(workspace) => updateTabWorkspace(activeTab.id, workspace)}
+          selectedSessionId={activeTab.selectedSessionId}
+          onActiveSessionChange={(sessionId) => updateTabSelectedSession(activeTab.id, sessionId)}
           onBack={() =>
             setTabs((prev) =>
               prev.map((t) =>

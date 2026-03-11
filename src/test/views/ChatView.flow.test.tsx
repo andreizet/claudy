@@ -91,6 +91,11 @@ describe("ChatView core message flow", () => {
   });
 
   it("first prompt in a new session shows optimistic user message and generating state and uses send_new_message", async () => {
+    const listeners = new Map<string, (payload: { payload: string }) => void>();
+    listenMock.mockImplementation((event: string, callback: (payload: { payload: string }) => void) => {
+      listeners.set(event, callback);
+      return Promise.resolve(() => listeners.delete(event));
+    });
     const workspace = { ...mockWorkspace, sessions: [] };
     invokeMock.mockImplementation((command: string) => {
       switch (command) {
@@ -110,6 +115,18 @@ describe("ChatView core message flow", () => {
           return Promise.resolve(null);
         case "send_new_message":
           return Promise.resolve(null);
+        case "describe_workspace":
+          return Promise.resolve({
+            ...workspace,
+            sessions: [
+              {
+                id: "session-created",
+                file_path: "/tmp/claudy/session-created.jsonl",
+                modified_at: `${Math.floor(Date.now() / 1000)}`,
+                first_message: "hello from new session",
+              },
+            ],
+          });
         default:
           return Promise.resolve([]);
       }
@@ -118,6 +135,8 @@ describe("ChatView core message flow", () => {
     renderChat(workspace);
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
     expect(screen.getByText("Configuring Claude Code")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Ask for follow-up changes…")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_claude_session_init", expect.any(Object)));
     expect(await screen.findByRole("button", { name: "Save" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -135,6 +154,20 @@ describe("ChatView core message flow", () => {
 
     expect(screen.getByText("pending-user:hello from new session")).toBeInTheDocument();
     expect(screen.getByText("show-generating:true")).toBeInTheDocument();
+
+    listeners.get("claude-stream")?.({
+      payload: JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: "session-created",
+        cwd: workspace.decoded_path,
+        model: "claude-sonnet-4-6",
+        tools: ["Read", "Edit", "Bash"],
+        mcp_servers: [],
+      }),
+    });
+
+    expect(await screen.findByText("hello from new session")).toBeInTheDocument();
   });
 
   it("normal send uses send_message", async () => {
