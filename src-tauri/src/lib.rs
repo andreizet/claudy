@@ -2577,6 +2577,13 @@ fn send_new_message(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            Ok(())
+        })
         .manage(InteractiveSessionStore::default())
         .manage(PlanUsageCache::default())
         .invoke_handler(tauri::generate_handler![

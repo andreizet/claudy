@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "./types";
 import { ACTIVE_TAB_STORAGE_KEY, loadAppSettings, OPEN_TABS_STORAGE_KEY } from "./shared/settings";
 import { extractMcpServers, loadToolInventoryCache, saveToolInventoryCache } from "./shared/toolPolicy";
+import { checkForAppUpdatesOnStartup } from "./updater";
 import HomeView from "./views/HomeView";
 import ChatView from "./views/ChatView";
 import SplashScreen from "./components/SplashScreen";
@@ -246,6 +247,10 @@ export default function App() {
         // Ignore startup inventory failures.
       });
   }, [workspaces]);
+
+  useEffect(() => {
+    void checkForAppUpdatesOnStartup();
+  }, []);
 
   useEffect(() => {
     try {

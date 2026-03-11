@@ -1,4 +1,4 @@
-name: Test And Build
+name: Test And Release
 
 on:
   push:
@@ -57,15 +57,24 @@ jobs:
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
   build:
-    name: Build (${{ matrix.platform }})
+    name: Build (${{ matrix.name }})
     needs: test
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-          - platform: ubuntu-22.04
-          - platform: windows-latest
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            args: --target aarch64-apple-darwin
+          - name: macOS Intel
+            platform: macos-latest
+            args: --target x86_64-apple-darwin
+          - name: Linux x64
+            platform: ubuntu-22.04
+            args: ""
+          - name: Windows x64
+            platform: windows-latest
+            args: ""
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
@@ -79,6 +88,10 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install additional Rust target
+        if: ${{ startsWith(matrix.args, '--target ') }}
+        run: rustup target add ${{ replace(matrix.args, '--target ', '') }}
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -101,26 +114,34 @@ jobs:
 
       - name: Build Tauri app
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: npm run tauri build
+        run: npm run tauri build -- ${{ matrix.args }}
 
       - name: Upload build artifacts
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
         with:
-          name: claudy-${{ matrix.platform }}
+          name: claudy-${{ matrix.name }}
           path: |
             src-tauri/target/release/bundle/**
 
       - name: Build and publish GitHub Release assets
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          projectPath: .
           tagName: ${{ github.ref_name }}
           releaseName: "Claudy ${{ github.ref_name }}"
-          releaseBody: "Automated build for ${{ github.ref_name }}"
+          releaseBody: "Automated release for ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
+          generateReleaseNotes: true
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          updaterJsonPreferNsis: true
           includeDebug: false
           includeRelease: true
+          args: ${{ matrix.args }}
