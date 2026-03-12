@@ -10,6 +10,17 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    isMaximized: () => Promise.resolve(false),
+    minimize: () => Promise.resolve(),
+    toggleMaximize: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+    startDragging: () => Promise.resolve(),
+    onResized: () => Promise.resolve(() => {}),
+  }),
+}));
+
 vi.mock("../views/HomeView", () => ({
   default: ({
     workspaces,
@@ -153,8 +164,8 @@ describe("App tab and session flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "open-backend" }));
     await waitFor(() => expect(screen.getByText("chat-backend")).toBeInTheDocument());
 
-    expect(screen.getByText("backend - Investigate the API")).toBeInTheDocument();
-    expect(screen.getByText("claudy - Implement the login flow")).toBeInTheDocument();
+    expect(screen.getAllByText("backend - Investigate the API")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("claudy - Implement the login flow")[0]).toBeInTheDocument();
   });
 
   it("closing the active tab falls back to the previous available tab", async () => {
@@ -190,9 +201,9 @@ describe("App tab and session flow", () => {
     renderWithProviders(<App />);
 
     await waitFor(() => expect(screen.getByText("chat-backend")).toBeInTheDocument());
-    expect(screen.getByText("backend - Investigate the API")).toBeInTheDocument();
-    expect(screen.getByText("claudy - Implement the login flow")).toBeInTheDocument();
-    expect(screen.getByText("Projects")).toBeInTheDocument();
+    expect(screen.getAllByText("backend - Investigate the API")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("claudy - Implement the login flow")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("Projects")[0]).toBeInTheDocument();
   });
 
   it("does not restore saved tabs when remember open tabs is disabled", async () => {
@@ -223,7 +234,7 @@ describe("App tab and session flow", () => {
 
     fireEvent.click(screen.getByTitle("New tab"));
     await waitFor(() => expect(screen.getByText("home-view")).toBeInTheDocument());
-    fireEvent.click(screen.getByText("claudy - Implement the login flow"));
+    fireEvent.click(screen.getAllByText("claudy - Implement the login flow")[0]);
 
     await waitFor(() => expect(screen.getByText("chat-claudy")).toBeInTheDocument());
     expect(screen.getByText("session-count:3")).toBeInTheDocument();
@@ -241,8 +252,8 @@ describe("App tab and session flow", () => {
     fireEvent.click(screen.getByTitle("New tab"));
     await waitFor(() => expect(screen.getByText("home-view")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "open-claudy" }));
-    await waitFor(() => expect(screen.getByText("chat-claudy")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "select-second-session" }));
+    await waitFor(() => expect(screen.getAllByText("chat-claudy")).toHaveLength(2));
+    fireEvent.click(screen.getAllByRole("button", { name: "select-second-session" })[0]);
     expect(screen.getByText("selected-session:session-beta")).toBeInTheDocument();
 
     fireEvent.click(screen.getAllByText("claudy - Implement the login flow")[0]);
@@ -264,10 +275,10 @@ describe("App tab and session flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "view-settings" }));
     expect(screen.getByText("home-view-label:Settings")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("claudy - Implement the login flow"));
+    fireEvent.click(screen.getAllByText("claudy - Implement the login flow")[0]);
     await waitFor(() => expect(screen.getByText("chat-claudy")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getAllByText("Settings")[0]);
     await waitFor(() => expect(screen.getByText("home-view-label:Settings")).toBeInTheDocument());
   });
 });

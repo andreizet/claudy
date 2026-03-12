@@ -9,7 +9,7 @@ body,
   margin: 0;
   min-height: 100%;
   font-family: var(--mantine-font-family);
-  background: rgb(12, 12, 15);
+  background: #0c0c0f;
 }
 
 * {
@@ -95,6 +95,34 @@ body,
   color: #f87171 !important;
   background: rgba(248, 113, 113, 0.12);
   transform: scale(1.04);
+}
+
+.tabs-scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.tabs-scroll-area::-webkit-scrollbar {
+  height: 3px;
+}
+
+.tabs-scroll-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tabs-scroll-area::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+}
+
+.titlebar-btn:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #c8d0de !important;
+}
+
+.titlebar-btn--close:hover {
+  background: #c42b1c !important;
+  color: #ffffff !important;
 }
 
 .splash-screen {

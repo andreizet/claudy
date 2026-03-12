@@ -1460,7 +1460,7 @@ export default function ChatView({
     : "https://www.gravatar.com/avatar/?s=80&d=mp";
 
   return (
-    <Box style={{ display: "flex", height: "100vh", background: "#07090d" }}>
+    <Box style={{ display: "flex", height: "100vh", background: "#0c0c0f" }}>
       {/* ── Sidebar ── */}
       <Box
         style={{
@@ -1622,7 +1622,7 @@ export default function ChatView({
       </Box>
 
       {/* ── Main panel ── */}
-      <Box style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative", background: "#05070b" }}>
+      <Box style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative", background: "#0c0c0f" }}>
         {mainHeader}
 
         {/* Messages */}
@@ -1645,7 +1645,7 @@ export default function ChatView({
         )}
 
         {/* Input area */}
-        <Box style={{ borderTop: "1px solid #171c24", background: "#07090d", flexShrink: 0, padding: "10px 24px 16px" }}>
+        <Box style={{ borderTop: "1px solid #171c24", background: "#0c0c0f", flexShrink: 0, padding: "10px 24px 16px" }}>
           {/* Toolbar */}
           <Box style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, maxWidth: 820, width: "100%", marginInline: "auto" }}>
             <ModelSelect value={model} onChange={setModel} />
@@ -1847,28 +1847,44 @@ export default function ChatView({
               ) : null}
             </Box>
             <Box style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
-              <UnstyledButton
-                onClick={handleSend}
-                aria-label="Send message"
-                disabled={streaming || loadingMessages || sessionSettingsOpen || configuringSession || (!input.trim() && selectedFileRefs.length === 0)}
-                style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: 8,
-                  background: streaming || loadingMessages || sessionSettingsOpen || configuringSession || (!input.trim() && selectedFileRefs.length === 0) ? "#27272a" : "#f4f4f5",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                  transition: "background 120ms",
-                }}
-              >
-                {streaming ? (
-                  <Square size={14} fill="currentColor" strokeWidth={0} style={{ color: "#52525b" }} />
-                ) : (
+              {streaming ? (
+                <UnstyledButton
+                  onClick={() => invoke("stop_message").catch(() => {})}
+                  aria-label="Stop generation"
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    background: "#27272a",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                    transition: "background 120ms",
+                  }}
+                >
+                  <Square size={14} fill="currentColor" strokeWidth={0} style={{ color: "#e4e4e7" }} />
+                </UnstyledButton>
+              ) : (
+                <UnstyledButton
+                  onClick={handleSend}
+                  aria-label="Send message"
+                  disabled={loadingMessages || sessionSettingsOpen || configuringSession || (!input.trim() && selectedFileRefs.length === 0)}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    background: loadingMessages || sessionSettingsOpen || configuringSession || (!input.trim() && selectedFileRefs.length === 0) ? "#27272a" : "#f4f4f5",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                    transition: "background 120ms",
+                  }}
+                >
                   <Send size={14} strokeWidth={2} style={{ color: input.trim() || selectedFileRefs.length > 0 ? "#0c0c0f" : "#52525b" }} />
-                )}
-              </UnstyledButton>
+                </UnstyledButton>
+              )}
             </Box>
           </Box>
         </Box>

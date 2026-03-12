@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState, type MouseEvent } from "react";
+import React, { useCallback, useEffect, useState, type MouseEvent } from "react";
 import { Box, Text, UnstyledButton } from "@mantine/core";
-import { Folder, Plus, X } from "lucide-react";
+import { Folder, Minus, Plus, Square, X } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "./types";
 import { ACTIVE_TAB_STORAGE_KEY, loadAppSettings, OPEN_TABS_STORAGE_KEY } from "./shared/settings";
 import { extractMcpServers, loadToolInventoryCache, saveToolInventoryCache } from "./shared/toolPolicy";
@@ -107,6 +108,62 @@ function loadStoredTabs(): { tabs: AppTab[]; activeTabId: string | null } {
   }
 }
 
+
+function WindowControls() {
+  const [maximized, setMaximized] = useState(false);
+  const win = getCurrentWindow();
+
+  useEffect(() => {
+    win.isMaximized().then(setMaximized).catch(() => {});
+    const unlisten = win.onResized(() => {
+      win.isMaximized().then(setMaximized).catch(() => {});
+    });
+    return () => { unlisten.then((f) => f()).catch(() => {}); };
+  }, [win]);
+
+  const btnBase: React.CSSProperties = {
+    width: 46,
+    height: "100%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    transition: "background 150ms ease, color 150ms ease",
+    color: "#8d99ad",
+    background: "transparent",
+    cursor: "default",
+  };
+
+  return (
+    <Box style={{ display: "flex", alignItems: "stretch", height: "100%", marginLeft: "auto", flexShrink: 0 }}>
+      <UnstyledButton
+        title="Minimize"
+        onClick={() => win.minimize().catch(() => {})}
+        className="titlebar-btn"
+        style={btnBase}
+      >
+        <Minus size={14} strokeWidth={1.8} />
+      </UnstyledButton>
+      <UnstyledButton
+        title={maximized ? "Restore" : "Maximize"}
+        onClick={() => win.toggleMaximize().catch(() => {})}
+        className="titlebar-btn"
+        style={btnBase}
+      >
+        <Square size={11} strokeWidth={1.8} />
+      </UnstyledButton>
+      <UnstyledButton
+        title="Close"
+        onClick={() => win.close().catch(() => {})}
+        className="titlebar-btn titlebar-btn--close"
+        style={btnBase}
+      >
+        <X size={14} strokeWidth={1.8} />
+      </UnstyledButton>
+    </Box>
+  );
+}
+
 export default function App() {
   const queryClient = useQueryClient();
   const [initialState] = useState(loadStoredTabs);
@@ -138,19 +195,11 @@ export default function App() {
   };
 
   const replaceActiveTabWithWorkspace = (workspace: DiscoveredWorkspace) => {
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === activeTabId
-          ? {
-              id: activeTabId,
-              kind: "chat",
-              workspace,
-              sessionTitle: workspace.sessions[0]?.first_message ?? null,
-              selectedSessionId: workspace.sessions[0]?.id ?? null,
-            }
-          : t
-      )
-    );
+    setTabs((prev) => prev.map((t) => t.id !== activeTabId ? t : {
+      id: activeTabId, kind: "chat" as const, workspace,
+      sessionTitle: workspace.sessions[0]?.first_message ?? null,
+      selectedSessionId: workspace.sessions[0]?.id ?? null,
+    }));
   };
 
   const updateTabSessionTitle = useCallback((tabId: string, sessionTitle: string | null) => {
@@ -376,12 +425,19 @@ export default function App() {
   }
 
   if (!hasProjectTabs) {
+    const standaloneHeader = (
+      <Box style={{ height: 56, background: "#0c0c0f", borderBottom: "1px solid #1f1f23", display: "flex", alignItems: "center", flexShrink: 0, userSelect: "none" }}>
+        <Box onMouseDown={(e) => { if (e.button === 0) getCurrentWindow().startDragging().catch(() => {}); }} style={{ flex: 1, height: "100%" }} />
+        <WindowControls />
+      </Box>
+    );
     return (
       <Box style={{ height: "100vh", minHeight: 0 }}>
         <HomeView
           workspaces={workspaces}
           isLoading={isLoading}
           accountInfo={accountInfo}
+          mainHeader={standaloneHeader}
           onOpenWorkspace={openWorkspaceInNewTab}
           onCreateSession={(workspacePath) => void handleCreateSession(workspacePath)}
         />
@@ -392,17 +448,30 @@ export default function App() {
   const tabHeader = (
     <Box
       style={{
-        height: 50,
+        height: 56,
         borderBottom: "1px solid #1f1f23",
         display: "flex",
         alignItems: "center",
-        gap: 6,
-        padding: "0 12px",
-        background: "#07090d",
+        background: "#0c0c0f",
         flexShrink: 0,
-        overflowX: "auto",
+        userSelect: "none",
+        minWidth: 0,
       }}
     >
+      {/* Scrollable tabs — hidden scrollbar, shrinks as needed */}
+      <Box
+        className="tabs-scroll-area"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "0 0 0 12px",
+          overflowX: "auto",
+          flexShrink: 1,
+          minWidth: 0,
+          height: "100%",
+        }}
+      >
       {tabs.map((tab) => {
         const active = tab.id === activeTabId;
         const label = tab.kind === "chat"
@@ -511,6 +580,10 @@ export default function App() {
       >
         <Plus size={16} strokeWidth={2.2} />
       </UnstyledButton>
+      </Box>{/* end tabs-scroll-area */}
+      {/* Drag buffer — fills remaining space, grab here to move the window */}
+      <Box onMouseDown={(e) => { if (e.button === 0) getCurrentWindow().startDragging().catch(() => {}); }} style={{ flex: 1, minWidth: 16, height: "100%" }} />
+      <WindowControls />
     </Box>
   );
 

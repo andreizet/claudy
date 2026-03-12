@@ -364,6 +364,11 @@ struct PlanUsageCache {
     entries: Mutex<HashMap<String, CachedPlanUsage>>,
 }
 
+#[derive(Default)]
+struct ActiveClaudeProcess {
+    child: Mutex<Option<std::process::Child>>,
+}
+
 #[derive(Clone)]
 struct CachedPlanUsage {
     usage: ClaudePlanUsage,
@@ -3070,6 +3075,11 @@ fn spawn_claude_message(
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
 
+        // Store child handle so stop_message can kill the process
+        if let Ok(mut guard) = app.state::<ActiveClaudeProcess>().child.lock() {
+            *guard = Some(child);
+        }
+
         // Emit stderr in background thread (skip bun/AVX warnings)
         let app2 = app.clone();
         std::thread::spawn(move || {
@@ -3090,7 +3100,13 @@ fn spawn_claude_message(
             }
         }
 
-        child.wait().ok();
+        // Wait for the process (it may have already been killed by stop_message)
+        if let Ok(mut guard) = app.state::<ActiveClaudeProcess>().child.lock() {
+            if let Some(mut c) = guard.take() {
+                c.wait().ok();
+            }
+        }
+
         app.emit("claude-done", ()).ok();
     });
 
@@ -3310,6 +3326,18 @@ async fn authenticate_mcp_server(name: String, scope: String, workspace_path: Op
     .map_err(|e| format!("Task failed: {e}"))?
 }
 
+// ─── Stop message ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn stop_message(active_process: State<ActiveClaudeProcess>) {
+    if let Ok(mut guard) = active_process.child.lock() {
+        if let Some(mut child) = guard.take() {
+            child.kill().ok();
+            child.wait().ok();
+        }
+    }
+}
+
 // ─── App entry ────────────────────────────────────────────────────────────────
 
 pub fn run() {
@@ -3324,6 +3352,7 @@ pub fn run() {
         })
         .manage(InteractiveSessionStore::default())
         .manage(PlanUsageCache::default())
+        .manage(ActiveClaudeProcess::default())
         .invoke_handler(tauri::generate_handler![
             scan_existing_sessions,
             describe_workspace,
@@ -3356,7 +3385,8 @@ pub fn run() {
             resize_interactive_command,
             close_interactive_command,
             send_new_message,
-            send_message
+            send_message,
+            stop_message
         ])
         .run(tauri::generate_context!())
         .expect("error while running Claudy");
