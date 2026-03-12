@@ -3348,6 +3348,12 @@ pub fn run() {
             #[cfg(desktop)]
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_decorations(true);
+                let _ = window.set_title_bar_style(tauri::TitleBarStyle::Overlay);
+                let _ = window.set_background_color(Some(tauri::window::Color(17, 20, 27, 255)));
+            }
             Ok(())
         })
         .manage(InteractiveSessionStore::default())

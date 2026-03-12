@@ -41,6 +41,8 @@ import {
   splitToolsBySource,
 } from "../shared/toolPolicy";
 
+const IS_MACOS = /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
+
 interface Props {
   workspace: DiscoveredWorkspace;
   accountInfo: ClaudeAccountInfo | null;
@@ -1122,14 +1124,24 @@ export default function ChatView({
       setStreamMessages([]);
       setStreamBlocks([]);
       setPendingUserMessage("");
-      if (completedSessionId) {
-        setSessionActivityById((current) => {
-          const next = { ...current };
-          if (currentActiveSession?.id === completedSessionId) delete next[completedSessionId];
-          else next[completedSessionId] = "completed";
-          return next;
-        });
-      }
+      // Clear all "generating" activity — handles both the sending tab and
+      // other tabs that picked up "generating" via the claude-init event.
+      setSessionActivityById((current) => {
+        const next: Record<string, SessionActivityState> = {};
+        for (const [id, state] of Object.entries(current)) {
+          if (state === "generating") {
+            // Mark as "completed" only if this isn't the active session
+            if (id !== currentActiveSession?.id) next[id] = "completed";
+            // else: drop it (active session doesn't need the indicator)
+          } else {
+            next[id] = state;
+          }
+        }
+        return Object.keys(next).length === Object.keys(current).length &&
+          Object.entries(next).every(([k, v]) => current[k] === v)
+          ? current
+          : next;
+      });
       pendingSendRef.current = null;
       if (creatingInitialSessionRef.current || !currentActiveSession) {
         try {
@@ -1753,6 +1765,7 @@ export default function ChatView({
                     border: "none",
                     padding: 0,
                     color: "#e4e4e7",
+                    caretColor: "#e4e4e7",
                     fontSize: 13,
                     lineHeight: 1.6,
                     resize: "none",

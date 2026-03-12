@@ -18,6 +18,7 @@ type AppTab =
   | { id: string; kind: "home"; viewLabel: HomeTabLabel }
   | { id: string; kind: "chat"; workspace: DiscoveredWorkspace; sessionTitle: string | null; selectedSessionId: string | null };
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
+const IS_MACOS = /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
 
 interface ClaudeSessionInit {
   session_id: string | null;
@@ -426,9 +427,9 @@ export default function App() {
 
   if (!hasProjectTabs) {
     const standaloneHeader = (
-      <Box style={{ height: 56, background: "#0c0c0f", borderBottom: "1px solid #1f1f23", display: "flex", alignItems: "center", flexShrink: 0, userSelect: "none" }}>
-        <Box onMouseDown={(e) => { if (e.button === 0) getCurrentWindow().startDragging().catch(() => {}); }} style={{ flex: 1, height: "100%" }} />
-        <WindowControls />
+      <Box style={{ height: 47, background: "#0c0c0f", borderBottom: "1px solid #1f1f23", display: "flex", alignItems: "center", flexShrink: 0, userSelect: "none" }}>
+        <Box data-tauri-drag-region style={{ flex: 1, height: "100%" }} />
+        {!IS_MACOS && <WindowControls />}
       </Box>
     );
     return (
@@ -448,10 +449,10 @@ export default function App() {
   const tabHeader = (
     <Box
       style={{
-        height: 56,
+        height: 47,
         borderBottom: "1px solid #1f1f23",
         display: "flex",
-        alignItems: "center",
+        alignItems: IS_MACOS ? "flex-start" : "center",
         background: "#0c0c0f",
         flexShrink: 0,
         userSelect: "none",
@@ -460,16 +461,26 @@ export default function App() {
     >
       {/* Scrollable tabs — hidden scrollbar, shrinks as needed */}
       <Box
-        className="tabs-scroll-area"
         style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "0 0 0 12px",
-          overflowX: "auto",
-          flexShrink: 1,
+          flex: 1,
+          flexShrink: 0,
           minWidth: 0,
           height: "100%",
+          overflow: "hidden",
+        }}
+      >
+      <Box
+        className="tabs-scroll-area"
+        style={{
+          display: "inline-flex",
+          alignItems: IS_MACOS ? "flex-start" : "center",
+          gap: 6,
+          padding: IS_MACOS ? "8px 0 0 12px" : "0 0 0 12px",
+          overflowX: "auto",
+          minWidth: 0,
+          maxWidth: "100%",
+          height: "100%",
+          whiteSpace: "nowrap",
         }}
       >
       {tabs.map((tab) => {
@@ -581,9 +592,12 @@ export default function App() {
         <Plus size={16} strokeWidth={2.2} />
       </UnstyledButton>
       </Box>{/* end tabs-scroll-area */}
-      {/* Drag buffer — fills remaining space, grab here to move the window */}
-      <Box onMouseDown={(e) => { if (e.button === 0) getCurrentWindow().startDragging().catch(() => {}); }} style={{ flex: 1, minWidth: 16, height: "100%" }} />
-      <WindowControls />
+      </Box>
+      {!IS_MACOS && <>
+        {/* Drag buffer — fills remaining space, grab here to move the window */}
+        <Box data-tauri-drag-region style={{ flex: 1, minWidth: 16, height: "100%" }} />
+        <WindowControls />
+      </>}
     </Box>
   );
 
