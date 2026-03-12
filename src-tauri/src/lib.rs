@@ -214,6 +214,81 @@ pub struct SkillCatalogEntry {
     pub destination_name: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum McpServerStatus {
+    Connected,
+    Connecting,
+    NeedsAuth,
+    InvalidConfig,
+    Error,
+    Disabled,
+    Unknown,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpNameValue {
+    pub name: String,
+    pub value_preview: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpServerRecord {
+    pub name: String,
+    pub scope: String,
+    pub transport: String,
+    pub status: McpServerStatus,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub url: Option<String>,
+    pub headers: Vec<McpNameValue>,
+    pub env: Vec<McpNameValue>,
+    pub auth_mode: String,
+    pub has_secret: bool,
+    pub workspace_path: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct McpServerInput {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AddMcpServerRequest {
+    pub name: String,
+    pub scope: String,
+    pub workspace_path: Option<String>,
+    pub transport: String,
+    pub command_or_url: String,
+    pub args: Vec<String>,
+    pub env: Vec<McpServerInput>,
+    pub headers: Vec<McpServerInput>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub callback_port: Option<u16>,
+    pub auth_mode: String,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AddMcpServerJsonRequest {
+    pub name: String,
+    pub scope: String,
+    pub workspace_path: Option<String>,
+    pub json: String,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveMcpServerRequest {
+    pub name: String,
+    pub scope: Option<String>,
+    pub workspace_path: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct ClaudeSessionInit {
     pub session_id: Option<String>,
@@ -591,6 +666,413 @@ fn claude_binary_and_path() -> (String, String) {
         });
 
     (claude_bin, full_path)
+}
+
+fn command_cwd_for_scope(scope: &str, workspace_path: Option<&str>) -> Result<PathBuf, String> {
+    if scope == "project" {
+        let path = workspace_path
+            .map(PathBuf::from)
+            .ok_or_else(|| "Project-scoped MCP servers require a workspace path".to_string())?;
+        if !path.exists() || !path.is_dir() {
+            return Err("Workspace path does not exist".to_string());
+        }
+        return Ok(path);
+    }
+
+    dirs_next::home_dir().ok_or_else(|| "Could not resolve home directory".to_string())
+}
+
+fn run_claude_command_capture(args: &[String], cwd: Option<&Path>) -> Result<String, String> {
+    let (claude_bin, full_path) = claude_binary_and_path();
+    let mut cmd = std::process::Command::new(&claude_bin);
+    cmd.args(args);
+    cmd.env("PATH", full_path);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+
+    let output = cmd.output().map_err(|e| format!("Failed to run Claude: {e}"))?;
+    let stdout = sanitize_claude_cli_output(&String::from_utf8_lossy(&output.stdout));
+    let stderr = sanitize_claude_cli_output(&String::from_utf8_lossy(&output.stderr));
+    if output.status.success() {
+        return Ok(stdout.trim().to_string());
+    }
+
+    let detail = if !stderr.is_empty() {
+        stderr.trim().to_string()
+    } else if !stdout.is_empty() {
+        stdout.trim().to_string()
+    } else {
+        format!("Claude exited with {}", output.status)
+    };
+    Err(detail)
+}
+
+fn sanitize_claude_cli_output(raw: &str) -> String {
+    let mut skip_next = false;
+    raw.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if skip_next {
+                skip_next = false;
+                if trimmed.starts_with("https://github.com/oven-sh/bun/releases/download/") {
+                    return None;
+                }
+            }
+            if trimmed.starts_with("warn: CPU lacks AVX support") {
+                skip_next = true;
+                return None;
+            }
+            if trimmed.starts_with("https://github.com/oven-sh/bun/releases/download/") {
+                return None;
+            }
+            Some(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn mask_secret(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= 6 {
+        return "••••".to_string();
+    }
+    let prefix: String = chars.iter().take(4).collect();
+    let suffix: String = chars.iter().rev().take(2).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("{prefix}...{suffix}")
+}
+
+fn mask_header_value(value: &str) -> String {
+    let trimmed = value.trim();
+    let lower = trimmed.to_lowercase();
+    if lower.starts_with("bearer ") {
+        let token = trimmed.get(7..).unwrap_or("").trim();
+        return if token.is_empty() {
+            "Bearer ••••".to_string()
+        } else {
+            format!("Bearer {}", mask_secret(token))
+        };
+    }
+    mask_secret(trimmed)
+}
+
+fn map_mcp_status(status_text: &str) -> (McpServerStatus, Option<String>) {
+    let normalized = status_text.trim();
+    let lower = normalized.to_lowercase();
+    if lower.is_empty() {
+        return (McpServerStatus::Unknown, None);
+    }
+    if lower.contains("need") && lower.contains("auth") {
+        return (McpServerStatus::NeedsAuth, Some(normalized.to_string()));
+    }
+    if lower.contains("unauthorized") || lower.contains("forbidden") || lower.contains("authentication") {
+        return (McpServerStatus::NeedsAuth, Some(normalized.to_string()));
+    }
+    if lower.contains("invalid") || lower.contains("malformed") || lower.contains("missing") {
+        return (McpServerStatus::InvalidConfig, Some(normalized.to_string()));
+    }
+    if lower.contains("connected") {
+        return (McpServerStatus::Connected, None);
+    }
+    if lower.contains("connecting") {
+        return (McpServerStatus::Connecting, None);
+    }
+    if lower.contains("failed") || lower.contains("error") {
+        return (McpServerStatus::Error, Some(normalized.to_string()));
+    }
+    (McpServerStatus::Unknown, Some(normalized.to_string()))
+}
+
+fn parse_section_pairs(lines: &[&str], start_index: usize) -> (Vec<McpNameValue>, usize, bool) {
+    let mut index = start_index;
+    let mut values = Vec::new();
+    let mut has_secret = false;
+    while index < lines.len() {
+        let line = lines[index];
+        if !line.starts_with("    ") {
+            break;
+        }
+        let trimmed = line.trim();
+        if let Some((name, value)) = trimmed.split_once(':') {
+            let preview = mask_header_value(value);
+            has_secret = has_secret || !value.trim().is_empty();
+            values.push(McpNameValue {
+                name: name.trim().to_string(),
+                value_preview: preview,
+            });
+        }
+        index += 1;
+    }
+    (values, index, has_secret)
+}
+
+fn parse_args_line(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    trimmed
+        .split_whitespace()
+        .map(|item| item.to_string())
+        .collect()
+}
+
+fn parse_mcp_get_output(name: &str, raw: &str, workspace_path: Option<String>) -> McpServerRecord {
+    let lines: Vec<&str> = raw.lines().collect();
+    let mut scope = "local".to_string();
+    let mut transport = "stdio".to_string();
+    let mut command = None;
+    let mut args = Vec::new();
+    let mut url = None;
+    let mut headers = Vec::new();
+    let mut env = Vec::new();
+    let mut status = McpServerStatus::Unknown;
+    let mut last_error = None;
+    let mut has_secret = false;
+    let mut index = 0;
+
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
+        if let Some(value) = trimmed.strip_prefix("Scope:") {
+            let lower = value.trim().to_lowercase();
+            scope = if lower.starts_with("project") || lower.contains("project config") || lower.contains("project scope") {
+                "project".to_string()
+            } else if lower.contains("user") {
+                "user".to_string()
+            } else {
+                "local".to_string()
+            };
+        } else if let Some(value) = trimmed.strip_prefix("Status:") {
+            let mapped = value.trim().trim_start_matches('✓').trim_start_matches('✗').trim();
+            let (mapped_status, mapped_error) = map_mcp_status(mapped);
+            status = mapped_status;
+            last_error = mapped_error;
+        } else if let Some(value) = trimmed.strip_prefix("Type:") {
+            transport = value.trim().to_lowercase();
+        } else if let Some(value) = trimmed.strip_prefix("Command:") {
+            let candidate = value.trim();
+            if !candidate.is_empty() {
+                command = Some(candidate.to_string());
+            }
+        } else if let Some(value) = trimmed.strip_prefix("Args:") {
+            args = parse_args_line(value);
+        } else if let Some(value) = trimmed.strip_prefix("URL:") {
+            let candidate = value.trim();
+            if !candidate.is_empty() {
+                url = Some(candidate.to_string());
+            }
+        } else if trimmed == "Headers:" {
+            let (parsed, next_index, section_has_secret) = parse_section_pairs(&lines, index + 1);
+            headers = parsed;
+            has_secret = has_secret || section_has_secret;
+            index = next_index.saturating_sub(1);
+        } else if trimmed == "Environment:" {
+            let (parsed, next_index, section_has_secret) = parse_section_pairs(&lines, index + 1);
+            env = parsed;
+            has_secret = has_secret || section_has_secret;
+            index = next_index.saturating_sub(1);
+        }
+        index += 1;
+    }
+
+    let auth_mode = if transport == "stdio" && !env.is_empty() {
+        "env".to_string()
+    } else if !headers.is_empty() {
+        "bearer".to_string()
+    } else {
+        "none".to_string()
+    };
+
+    McpServerRecord {
+        name: name.to_string(),
+        scope,
+        transport,
+        status,
+        command,
+        args,
+        url,
+        headers,
+        env,
+        auth_mode,
+        has_secret,
+        workspace_path,
+        last_error,
+    }
+}
+
+#[cfg(test)]
+fn parse_mcp_list_names(raw: &str) -> Vec<String> {
+    raw.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let (name, _) = trimmed.split_once(':')?;
+            if name.is_empty()
+                || name.eq_ignore_ascii_case("Checking MCP server health...")
+                || name.eq_ignore_ascii_case("No MCP servers configured. Use `claude mcp add` to add a server.")
+            {
+                return None;
+            }
+            Some(name.to_string())
+        })
+        .collect()
+}
+
+fn parse_mcp_list_output(raw: &str) -> Vec<McpServerRecord> {
+    raw.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || trimmed.eq_ignore_ascii_case("Checking MCP server health...")
+                || trimmed.eq_ignore_ascii_case("No MCP servers configured. Use `claude mcp add` to add a server.")
+            {
+                return None;
+            }
+
+            let (name, remainder) = trimmed.split_once(':')?;
+            let name = name.trim();
+            if name.is_empty() {
+                return None;
+            }
+
+            let (descriptor, status_part) = remainder
+                .rsplit_once(" - ")
+                .map(|(left, right)| (left.trim(), right.trim()))
+                .unwrap_or((remainder.trim(), ""));
+
+            let lower_desc = descriptor.to_lowercase();
+            let transport = if lower_desc.contains("(http)") {
+                "http".to_string()
+            } else if lower_desc.contains("(sse)") {
+                "sse".to_string()
+            } else if lower_desc.starts_with("https://") || lower_desc.starts_with("http://") {
+                "http".to_string()
+            } else {
+                "stdio".to_string()
+            };
+
+            let clean_descriptor = descriptor
+                .replace("(HTTP)", "")
+                .replace("(SSE)", "")
+                .trim()
+                .to_string();
+
+            let (status, last_error) = map_mcp_status(status_part.trim_start_matches('✓').trim_start_matches('✗').trim());
+
+            let scope = if name.starts_with("claude.ai ") {
+                "cloud".to_string()
+            } else {
+                "local".to_string()
+            };
+
+            Some(McpServerRecord {
+                name: name.to_string(),
+                scope,
+                transport: transport.clone(),
+                status,
+                command: if transport == "stdio" && !clean_descriptor.is_empty() {
+                    Some(clean_descriptor.clone())
+                } else {
+                    None
+                },
+                args: Vec::new(),
+                url: if transport != "stdio" && !clean_descriptor.is_empty() {
+                    Some(clean_descriptor)
+                } else {
+                    None
+                },
+                headers: Vec::new(),
+                env: Vec::new(),
+                auth_mode: "none".to_string(),
+                has_secret: false,
+                workspace_path: None,
+                last_error,
+            })
+        })
+        .collect()
+}
+
+fn parse_project_mcp_baseline(workspace_path: &Path) -> Vec<McpServerRecord> {
+    let Ok(raw) = fs::read_to_string(workspace_path.join(".mcp.json")) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+    let Some(servers) = json.get("mcpServers").and_then(|value| value.as_object()) else {
+        return Vec::new();
+    };
+
+    servers
+        .iter()
+        .map(|(name, value)| {
+            let transport = value
+                .get("type")
+                .and_then(|item| item.as_str())
+                .unwrap_or("stdio")
+                .to_lowercase();
+            let command = value.get("command").and_then(|item| item.as_str()).map(|item| item.to_string());
+            let args = value
+                .get("args")
+                .and_then(|item| item.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(|value| value.to_string()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let url = value.get("url").and_then(|item| item.as_str()).map(|item| item.to_string());
+
+            McpServerRecord {
+                name: name.clone(),
+                scope: "project".to_string(),
+                transport: transport.clone(),
+                status: McpServerStatus::Unknown,
+                command,
+                args,
+                url,
+                headers: Vec::new(),
+                env: Vec::new(),
+                auth_mode: if transport == "stdio" { "env".to_string() } else { "none".to_string() },
+                has_secret: false,
+                workspace_path: Some(workspace_path.to_string_lossy().to_string()),
+                last_error: None,
+            }
+        })
+        .collect()
+}
+
+fn get_mcp_server_from_scope(name: &str, scope: &str, workspace_path: Option<&str>) -> Result<McpServerRecord, String> {
+    let cwd = command_cwd_for_scope(scope, workspace_path)?;
+    let output = run_claude_command_capture(&["mcp".to_string(), "get".to_string(), name.to_string()], Some(&cwd))?;
+    Ok(parse_mcp_get_output(
+        name,
+        &output,
+        workspace_path.map(|value| value.to_string()),
+    ))
+}
+
+fn global_mcp_servers() -> Result<Vec<McpServerRecord>, String> {
+    let home = dirs_next::home_dir().ok_or_else(|| "Could not resolve home directory".to_string())?;
+    let output = run_claude_command_capture(&["mcp".to_string(), "list".to_string()], Some(&home))?;
+    Ok(parse_mcp_list_output(&output))
+}
+
+fn project_mcp_servers(workspace_paths: &[String]) -> Vec<McpServerRecord> {
+    workspace_paths
+        .iter()
+        .flat_map(|workspace_path| {
+            let path = PathBuf::from(workspace_path);
+            if !path.exists() || !path.is_dir() {
+                return Vec::new();
+            }
+            parse_project_mcp_baseline(&path)
+        })
+        .collect()
 }
 
 fn claude_candidates() -> Vec<String> {
@@ -2630,6 +3112,174 @@ fn send_new_message(
     )
 }
 
+#[tauri::command]
+async fn list_mcp_servers(workspace_paths: Vec<String>) -> Result<Vec<McpServerRecord>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut records = global_mcp_servers()?;
+        records.extend(project_mcp_servers(&workspace_paths));
+        records.sort_by(|a, b| a.name.cmp(&b.name).then(a.scope.cmp(&b.scope)));
+        Ok(records)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn probe_mcp_server(name: String, scope: String, workspace_path: Option<String>) -> Result<McpServerRecord, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        get_mcp_server_from_scope(&name, &scope, workspace_path.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn add_mcp_server(request: AddMcpServerRequest) -> Result<McpServerRecord, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+    let cwd = command_cwd_for_scope(&request.scope, request.workspace_path.as_deref())?;
+    // Build args with non-variadic flags first, then positional args,
+    // then variadic flags (--env, --header) last — variadic flags consume
+    // all subsequent values in Commander.js and would eat positional args.
+    let mut args = vec![
+        "mcp".to_string(),
+        "add".to_string(),
+        "--scope".to_string(),
+        request.scope.clone(),
+    ];
+
+    if request.transport != "stdio" {
+        args.push("--transport".to_string());
+        args.push(request.transport.clone());
+    }
+
+    if let Some(client_id) = request.client_id.as_ref().filter(|value| !value.trim().is_empty()) {
+        args.push("--client-id".to_string());
+        args.push(client_id.clone());
+    }
+
+    if request.client_secret.as_ref().is_some_and(|v| !v.trim().is_empty()) {
+        args.push("--client-secret".to_string());
+    }
+
+    if let Some(callback_port) = request.callback_port {
+        args.push("--callback-port".to_string());
+        args.push(callback_port.to_string());
+    }
+
+    // Positional args: <name> <commandOrUrl> [-- extra-args...]
+    args.push(request.name.clone());
+    args.push(request.command_or_url.clone());
+    if request.transport == "stdio" {
+        args.push("--".to_string());
+    }
+    args.extend(request.args.clone());
+
+    // Variadic flags last
+    for env_var in &request.env {
+        args.push("--env".to_string());
+        args.push(format!("{}={}", env_var.name, env_var.value));
+    }
+    for header in &request.headers {
+        args.push("--header".to_string());
+        args.push(format!("{}: {}", header.name, header.value));
+    }
+
+    if let Some(client_secret) = request.client_secret.as_ref().filter(|value| !value.trim().is_empty()) {
+        let env_name = "MCP_CLIENT_SECRET";
+        let (claude_bin, full_path) = claude_binary_and_path();
+        let mut cmd = std::process::Command::new(&claude_bin);
+        cmd.args(&args);
+        cmd.env("PATH", full_path);
+        cmd.env(env_name, client_secret);
+        cmd.current_dir(&cwd);
+        let output = cmd.output().map_err(|e| format!("Failed to run Claude: {e}"))?;
+        if !output.status.success() {
+            let stderr = sanitize_claude_cli_output(&String::from_utf8_lossy(&output.stderr)).trim().to_string();
+            let stdout = sanitize_claude_cli_output(&String::from_utf8_lossy(&output.stdout)).trim().to_string();
+            return Err(if !stderr.is_empty() { stderr } else { stdout });
+        }
+    } else {
+        run_claude_command_capture(&args, Some(&cwd))?;
+    }
+
+    let mut record = get_mcp_server_from_scope(&request.name, &request.scope, request.workspace_path.as_deref())?;
+    if request.auth_mode == "oauth" {
+        record.auth_mode = "oauth".to_string();
+    }
+    Ok(record)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn add_mcp_server_json(request: AddMcpServerJsonRequest) -> Result<McpServerRecord, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+    let cwd = command_cwd_for_scope(&request.scope, request.workspace_path.as_deref())?;
+    let args = vec![
+        "mcp".to_string(),
+        "add-json".to_string(),
+        "--scope".to_string(),
+        request.scope.clone(),
+        request.name.clone(),
+        request.json.clone(),
+    ];
+    run_claude_command_capture(&args, Some(&cwd))?;
+    get_mcp_server_from_scope(&request.name, &request.scope, request.workspace_path.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn remove_mcp_server(request: RemoveMcpServerRequest) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = request.scope.unwrap_or_else(|| "local".to_string());
+        let cwd = if scope == "project" {
+            request.workspace_path.as_deref()
+                .map(PathBuf::from)
+                .filter(|p| p.exists() && p.is_dir())
+                .unwrap_or_else(|| dirs_next::home_dir().unwrap_or_default())
+        } else {
+            dirs_next::home_dir().ok_or_else(|| "Could not resolve home directory".to_string())?
+        };
+        let args = vec![
+            "mcp".to_string(),
+            "remove".to_string(),
+            "--scope".to_string(),
+            scope,
+            request.name,
+        ];
+        run_claude_command_capture(&args, Some(&cwd)).map(|_| ())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn import_mcp_servers_from_claude_desktop() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let home = dirs_next::home_dir().ok_or_else(|| "Could not resolve home directory".to_string())?;
+        let args = vec!["mcp".to_string(), "add-from-claude-desktop".to_string()];
+        run_claude_command_capture(&args, Some(&home)).map(|_| ())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn authenticate_mcp_server(name: String, scope: String, workspace_path: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let record = get_mcp_server_from_scope(&name, &scope, workspace_path.as_deref())?;
+        let target = record.url.or(record.command).unwrap_or_else(|| name.clone());
+        Ok(format!(
+            "Claude Code does not expose a dedicated MCP re-auth command yet. Complete authentication through Claude Code for {target}, then refresh this view."
+        ))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
 // ─── App entry ────────────────────────────────────────────────────────────────
 
 pub fn run() {
@@ -2661,6 +3311,13 @@ pub fn run() {
             install_skill_from_folder,
             install_catalog_skill,
             delete_installed_skill,
+            list_mcp_servers,
+            probe_mcp_server,
+            add_mcp_server,
+            add_mcp_server_json,
+            remove_mcp_server,
+            import_mcp_servers_from_claude_desktop,
+            authenticate_mcp_server,
             get_workspace_favicon,
             get_workspace_files,
             get_workspace_slash_commands,
@@ -2692,6 +3349,90 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn parse_mcp_get_output_extracts_remote_fields() {
+        let parsed = parse_mcp_get_output(
+            "remote-probe",
+            r#"remote-probe:
+  Scope: Project config (shared via .mcp.json)
+  Status: ✗ Failed to connect
+  Type: http
+  URL: https://example.com/mcp
+  Headers:
+    Authorization: Bearer demo-secret
+
+To remove this server, run: claude mcp remove "remote-probe" -s project"#,
+            Some("/tmp/workspace".to_string()),
+        );
+
+        assert_eq!(parsed.name, "remote-probe");
+        assert_eq!(parsed.scope, "project");
+        assert_eq!(parsed.transport, "http");
+        assert_eq!(parsed.status, McpServerStatus::Error);
+        assert_eq!(parsed.url.as_deref(), Some("https://example.com/mcp"));
+        assert_eq!(parsed.headers.len(), 1);
+        assert_eq!(parsed.headers[0].name, "Authorization");
+        assert!(parsed.headers[0].value_preview.starts_with("Bearer "));
+        assert_eq!(parsed.workspace_path.as_deref(), Some("/tmp/workspace"));
+    }
+
+    #[test]
+    fn parse_mcp_get_output_extracts_stdio_fields() {
+        let parsed = parse_mcp_get_output(
+            "probe-server",
+            r#"probe-server:
+  Scope: User config
+  Status: ✓ Connected
+  Type: stdio
+  Command: npx
+  Args: -y @acme/server
+  Environment:
+    API_KEY: secret-value
+
+To remove this server, run: claude mcp remove "probe-server" -s user"#,
+            None,
+        );
+
+        assert_eq!(parsed.scope, "user");
+        assert_eq!(parsed.transport, "stdio");
+        assert_eq!(parsed.status, McpServerStatus::Connected);
+        assert_eq!(parsed.command.as_deref(), Some("npx"));
+        assert_eq!(parsed.args, vec!["-y".to_string(), "@acme/server".to_string()]);
+        assert_eq!(parsed.env.len(), 1);
+        assert_eq!(parsed.auth_mode, "env");
+    }
+
+    #[test]
+    fn parse_mcp_list_names_skips_non_server_lines() {
+        let names = parse_mcp_list_names(
+            "Checking MCP server health...\n\nalpha: https://example.com - ✓ Connected\nbeta: /usr/bin/env - ✗ Failed to connect\n",
+        );
+        assert_eq!(names, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn sanitize_claude_cli_output_filters_bun_avx_warning() {
+        let sanitized = sanitize_claude_cli_output(
+            "warn: CPU lacks AVX support, strange crashes may occur.\nhttps://github.com/oven-sh/bun/releases/download/bun-v1.3.11/bun-darwin-x64-baseline.zip\nalpha: /usr/bin/env - ✗ Failed to connect\n",
+        );
+        assert_eq!(sanitized.trim(), "alpha: /usr/bin/env - ✗ Failed to connect");
+    }
+
+    #[test]
+    fn parse_mcp_list_output_builds_baseline_records() {
+        let records = parse_mcp_list_output(
+            "alpha: /usr/bin/env - ✗ Failed to connect\nbeta: https://example.com/mcp (HTTP) - ✓ Connected\n",
+        );
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].name, "alpha");
+        assert_eq!(records[0].transport, "stdio");
+        assert_eq!(records[0].command.as_deref(), Some("/usr/bin/env"));
+        assert_eq!(records[1].name, "beta");
+        assert_eq!(records[1].transport, "http");
+        assert_eq!(records[1].url.as_deref(), Some("https://example.com/mcp"));
+        assert_eq!(records[1].status, McpServerStatus::Connected);
     }
 
     #[test]

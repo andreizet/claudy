@@ -2489,14 +2489,14 @@ function SessionSettingsOverlay({
                     </Text>
                     <Box style={{ display: "flex", gap: 8, flexShrink: 0 }}>
                       <ModeIconButton
-                        active={claudeMdViewMode === "edit"}
+                        active
                         label="Edit mode"
                         onClick={() => onClaudeMdViewModeChange("edit")}
                       >
                         <Pen size={14} strokeWidth={1.8} />
                       </ModeIconButton>
                       <ModeIconButton
-                        active={claudeMdViewMode === "preview"}
+                        active={false}
                         label="Preview"
                         onClick={() => onClaudeMdViewModeChange("preview")}
                       >
@@ -2530,14 +2530,14 @@ function SessionSettingsOverlay({
                   <Box style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
                     <Box style={{ display: "flex", gap: 8 }}>
                       <ModeIconButton
-                        active={claudeMdViewMode === "edit"}
+                        active={false}
                         label="Edit mode"
                         onClick={() => onClaudeMdViewModeChange("edit")}
                       >
                         <Pen size={14} strokeWidth={1.8} />
                       </ModeIconButton>
                       <ModeIconButton
-                        active={claudeMdViewMode === "preview"}
+                        active
                         label="Preview"
                         onClick={() => onClaudeMdViewModeChange("preview")}
                       >

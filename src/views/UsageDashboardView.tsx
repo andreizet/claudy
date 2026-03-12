@@ -21,6 +21,28 @@ const INTERVALS: Array<{ value: UsageInterval; label: string }> = [
   { value: "all", label: "All time" },
 ];
 
+const EMPTY_USAGE_DASHBOARD: UsageDashboard = {
+  interval: "30d",
+  summary: {
+    total_sessions: 0,
+    total_messages: 0,
+    total_input_tokens: 0,
+    total_output_tokens: 0,
+    total_tokens: 0,
+    total_cost_usd: 0,
+    total_tool_calls: 0,
+    total_lines_added: 0,
+    total_lines_removed: 0,
+    total_files_modified: 0,
+    active_days: 0,
+    avg_messages_per_session: 0,
+  },
+  daily: [],
+  models: [],
+  projects: [],
+  sessions: [],
+};
+
 export default function UsageDashboardView() {
   const [interval, setInterval] = useState<UsageInterval>("30d");
   const [projectSort, setProjectSort] = useState<SortState<ProjectSortKey>>({
@@ -31,39 +53,61 @@ export default function UsageDashboardView() {
     key: "started",
     direction: "desc",
   });
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, isFetching, error } = useQuery({
     queryKey: ["usage-dashboard", interval],
     queryFn: () => invoke<UsageDashboard>("get_usage_dashboard", { interval }),
     staleTime: 60_000,
+    placeholderData: (previousData) => previousData,
   });
+  const dashboardData = data ?? EMPTY_USAGE_DASHBOARD;
+  const showOverlay = isFetching && Boolean(data);
 
   const maxDailyTokens = useMemo(
-    () => Math.max(...(data?.daily.map((point) => point.total_tokens) ?? [0]), 1),
-    [data?.daily]
+    () => Math.max(...dashboardData.daily.map((point) => point.total_tokens), 1),
+    [dashboardData.daily]
   );
   const sortedProjects = useMemo(() => {
-    const items = [...(data?.projects ?? [])];
+    const items = [...dashboardData.projects];
     items.sort((a, b) => compareProjectRows(a, b, projectSort));
     return items;
-  }, [data?.projects, projectSort]);
+  }, [dashboardData.projects, projectSort]);
   const sortedSessions = useMemo(() => {
-    const items = [...(data?.sessions ?? [])];
+    const items = [...dashboardData.sessions];
     items.sort((a, b) => compareSessionRows(a, b, sessionSort));
     return items;
-  }, [data?.sessions, sessionSort]);
+  }, [dashboardData.sessions, sessionSort]);
 
-  if (isLoading) {
+  if (isLoading && !data) {
     return (
-      <Stack gap={16} p={20}>
-        <Skeleton height={34} width={340} radius="md" />
-        <Group grow>
-          {Array.from({ length: 4 }).map((_, index) => (
-            <Skeleton key={index} height={92} radius="lg" />
-          ))}
-        </Group>
-        <Skeleton height={220} radius="lg" />
-        <Skeleton height={320} radius="lg" />
-      </Stack>
+      <Box style={{ position: "relative", flex: 1 }}>
+        <Box
+          data-testid="usage-loading-overlay"
+          aria-live="polite"
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "center",
+            paddingTop: 16,
+            pointerEvents: "none",
+            zIndex: 20,
+          }}
+        >
+          <Box
+            style={{
+              padding: "10px 14px",
+              borderRadius: 999,
+              background: "rgba(24, 24, 27, 0.96)",
+              border: "1px solid #2a2a32",
+              boxShadow: "0 12px 30px rgba(0,0,0,0.35)",
+            }}
+          >
+            <Text size="sm" c="#f4f4f5">Gathering usage data…</Text>
+          </Box>
+        </Box>
+        <UsageDashboardSkeleton />
+      </Box>
     );
   }
 
@@ -78,8 +122,9 @@ export default function UsageDashboardView() {
   }
 
   return (
-    <ScrollArea type="always" scrollbars="y" scrollbarSize={8} offsetScrollbars style={{ flex: 1 }}>
-      <Stack gap={20} p={20}>
+    <Box style={{ position: "relative", flex: 1 }}>
+      <ScrollArea type="always" scrollbars="y" scrollbarSize={8} offsetScrollbars style={{ flex: 1, height: "100%" }}>
+        <Stack gap={20} p={20}>
         <Group justify="space-between" align="flex-start" wrap="nowrap">
           <Box>
             <Text size="xl" fw={700} c="#f4f4f5">Usage Dashboard</Text>
@@ -235,8 +280,52 @@ export default function UsageDashboardView() {
             />
           )}
         </Panel>
-      </Stack>
-    </ScrollArea>
+        </Stack>
+      </ScrollArea>
+      {showOverlay ? (
+        <Box
+          data-testid="usage-loading-overlay"
+          aria-live="polite"
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "center",
+            paddingTop: 16,
+            pointerEvents: "none",
+            zIndex: 20,
+          }}
+        >
+          <Box
+            style={{
+              padding: "10px 14px",
+              borderRadius: 999,
+              background: "rgba(24, 24, 27, 0.96)",
+              border: "1px solid #2a2a32",
+              boxShadow: "0 12px 30px rgba(0,0,0,0.35)",
+            }}
+          >
+            <Text size="sm" c="#f4f4f5">Gathering usage data…</Text>
+          </Box>
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+function UsageDashboardSkeleton() {
+  return (
+    <Stack gap={16} p={20} style={{ position: "absolute", inset: 0 }}>
+      <Skeleton height={34} width={340} radius="md" />
+      <Group grow>
+        {Array.from({ length: 4 }).map((_, index) => (
+          <Skeleton key={index} height={92} radius="lg" />
+        ))}
+      </Group>
+      <Skeleton height={220} radius="lg" />
+      <Skeleton height={320} radius="lg" />
+    </Stack>
   );
 }
 

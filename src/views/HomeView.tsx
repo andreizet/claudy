@@ -1,5 +1,5 @@
-import { useState, useMemo, useEffect } from "react";
-import { Box, Text, TextInput, Button, Group, Stack, ScrollArea, UnstyledButton, Skeleton, Switch, Tooltip } from "@mantine/core";
+import { useState, useMemo, useEffect, useRef, type CSSProperties } from "react";
+import { Box, Text, TextInput, Button, Group, Stack, ScrollArea, UnstyledButton, Skeleton, Switch, Tooltip, Modal } from "@mantine/core";
 import { BarChart3, ChevronDown, Cog, FolderKanban, Plus, Search, Star } from "lucide-react";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "../types";
 import sidebarTitle from "../assets/sidebar-title.svg";
@@ -19,9 +19,10 @@ import {
   saveToolInventoryCache,
   splitToolsBySource,
 } from "../shared/toolPolicy";
+import { applyMcpMeta, loadMcpServerMeta, McpServerMeta, mcpMetaKey, McpServerRecord, saveMcpServerMeta } from "../shared/mcp";
 
 type NavItem = "projects" | "favorites" | "usage" | "settings";
-type SettingsTab = "general" | "permissions" | "skills" | "hooks";
+type SettingsTab = "general" | "permissions" | "skills" | "mcp" | "hooks";
 const FAVORITES_STORAGE_KEY = "claudy.favoriteWorkspaces";
 const FAVICON_STORAGE_KEY = "claudy.workspaceFavicons";
 
@@ -64,6 +65,28 @@ interface SkillStatusMessage {
   message: string;
 }
 
+interface McpStatusMessage {
+  tone: "success" | "error";
+  message: string;
+}
+
+interface AddMcpFormState {
+  name: string;
+  scope: "local" | "user" | "project";
+  workspacePath: string;
+  transport: "stdio" | "http" | "sse";
+  commandOrUrl: string;
+  argsText: string;
+  authMode: "none" | "bearer" | "oauth" | "env";
+  secretName: string;
+  secretValue: string;
+  headerName: string;
+  headerValueType: "bearer" | "raw";
+  clientId: string;
+  clientSecret: string;
+  callbackPort: string;
+}
+
 function loadFavoriteWorkspaces(): Set<string> {
   try {
     const raw = window.localStorage.getItem(FAVORITES_STORAGE_KEY);
@@ -80,6 +103,25 @@ function errorMessage(error: unknown, fallback: string): string {
   if (typeof error === "string" && error.trim()) return error;
   if (error instanceof Error && error.message.trim()) return error.message;
   return fallback;
+}
+
+function createDefaultMcpForm(workspaces: DiscoveredWorkspace[]): AddMcpFormState {
+  return {
+    name: "",
+    scope: "local",
+    workspacePath: workspaces.find((workspace) => workspace.path_exists)?.decoded_path ?? workspaces[0]?.decoded_path ?? "",
+    transport: "http",
+    commandOrUrl: "",
+    argsText: "",
+    authMode: "none",
+    secretName: "Authorization",
+    secretValue: "",
+    headerName: "Authorization",
+    headerValueType: "bearer",
+    clientId: "",
+    clientSecret: "",
+    callbackPort: "",
+  };
 }
 
 interface Props {
@@ -129,7 +171,21 @@ export default function HomeView({
   const [skillStatus, setSkillStatus] = useState<SkillStatusMessage | null>(null);
   const [folderInstallInFlight, setFolderInstallInFlight] = useState(false);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
+  const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
+  const [loadingMcpServers, setLoadingMcpServers] = useState(false);
+  const [hasLoadedMcpServers, setHasLoadedMcpServers] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState<McpStatusMessage | null>(null);
+  const [mcpMeta, setMcpMeta] = useState<Record<string, McpServerMeta>>(loadMcpServerMeta);
+  const [busyMcpKey, setBusyMcpKey] = useState<string | null>(null);
+  const [addMcpOpen, setAddMcpOpen] = useState(false);
+  const [pasteJsonOpen, setPasteJsonOpen] = useState(false);
+  const [addMcpForm, setAddMcpForm] = useState<AddMcpFormState>(() => createDefaultMcpForm(workspaces));
+  const [pasteJsonName, setPasteJsonName] = useState("");
+  const [pasteJsonScope, setPasteJsonScope] = useState<"local" | "user" | "project">("local");
+  const [pasteJsonWorkspacePath, setPasteJsonWorkspacePath] = useState(workspaces.find((workspace) => workspace.path_exists)?.decoded_path ?? workspaces[0]?.decoded_path ?? "");
+  const [pasteJsonValue, setPasteJsonValue] = useState("");
   const [appVersion, setAppVersion] = useState(packageJson.version);
+  const mcpRefreshTokenRef = useRef(0);
 
   useEffect(() => {
     window.localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(Array.from(favorites)));
@@ -156,6 +212,16 @@ export default function HomeView({
   useEffect(() => {
     saveAppSettings(appSettings);
   }, [appSettings]);
+
+  useEffect(() => {
+    saveMcpServerMeta(mcpMeta);
+  }, [mcpMeta]);
+
+  useEffect(() => {
+    const defaultWorkspace = workspaces.find((workspace) => workspace.path_exists)?.decoded_path ?? workspaces[0]?.decoded_path ?? "";
+    setAddMcpForm((current) => current.workspacePath ? current : { ...current, workspacePath: defaultWorkspace });
+    setPasteJsonWorkspacePath((current) => current || defaultWorkspace);
+  }, [workspaces]);
 
   useEffect(() => {
     onViewLabelChange?.(
@@ -352,6 +418,19 @@ export default function HomeView({
       .finally(() => setLoadingSkillCatalog(false));
   }, [activeNav, settingsTab, hasLoadedSkillCatalog, loadingSkillCatalog]);
 
+  useEffect(() => {
+    if (activeNav !== "settings" || settingsTab !== "mcp" || loadingMcpServers || hasLoadedMcpServers) return;
+    void (async () => {
+      try {
+        await refreshMcpServers();
+      } catch (error) {
+        setMcpServers([]);
+        setHasLoadedMcpServers(true);
+        setMcpStatus({ tone: "error", message: errorMessage(error, "Could not load configured MCP servers.") });
+      }
+    })();
+  }, [activeNav, settingsTab, loadingMcpServers, hasLoadedMcpServers, workspaces, mcpMeta]);
+
   const refreshInstalledSkills = async () => {
     setLoadingInstalledSkills(true);
     try {
@@ -413,6 +492,243 @@ export default function HomeView({
       setSkillStatus({ tone: "error", message: errorMessage(error, `Could not delete ${skillName}.`) });
     } finally {
       setBusySkillId(null);
+    }
+  };
+
+  const refreshMcpServers = async () => {
+    const refreshToken = ++mcpRefreshTokenRef.current;
+    setLoadingMcpServers(true);
+    try {
+      const servers = await invoke<McpServerRecord[]>("list_mcp_servers", {
+        workspacePaths: workspaces.filter((workspace) => workspace.path_exists).map((workspace) => workspace.decoded_path),
+      });
+      const baseline = applyMcpMeta(servers, mcpMeta);
+      setMcpServers(baseline);
+      setHasLoadedMcpServers(true);
+
+      // Hydrate each row in the background. Baseline rendering should not wait for this.
+      void Promise.allSettled(
+        baseline.map(async (server) => {
+          const key = mcpMetaKey(server);
+          try {
+            const enriched = await invoke<McpServerRecord>("probe_mcp_server", {
+              name: server.name,
+              scope: server.scope,
+              workspacePath: server.workspace_path ?? null,
+            });
+            if (!enriched || typeof enriched !== "object") return;
+            if (mcpRefreshTokenRef.current !== refreshToken) return;
+            const meta = mcpMeta[key];
+            setMcpServers((current) => current.map((item) => (
+              mcpMetaKey(item) === key
+                ? applyMcpMeta([{ ...enriched, auth_mode: meta?.authMode ?? enriched.auth_mode }], mcpMeta)[0]
+                : item
+            )));
+          } catch (error) {
+            if (mcpRefreshTokenRef.current !== refreshToken) return;
+            setMcpServers((current) => current.map((item) => {
+              if (mcpMetaKey(item) !== key) return item;
+              // If the baseline list already gave a meaningful status, keep it
+              // rather than overriding with "error" just because probe failed
+              const keepStatus = item.status === "disabled"
+                || item.status === "connected"
+                || item.status === "needs-auth"
+                || item.status === "connecting";
+              return {
+                ...item,
+                status: keepStatus ? item.status : "error",
+                last_error: keepStatus ? item.last_error : errorMessage(error, `Could not load details for ${item.name}.`),
+              };
+            }));
+          }
+        })
+      );
+    } catch (error) {
+      setMcpServers([]);
+      setHasLoadedMcpServers(true);
+      throw new Error(errorMessage(error, "Could not refresh MCP servers."));
+    } finally {
+      if (mcpRefreshTokenRef.current === refreshToken) {
+        setLoadingMcpServers(false);
+      }
+    }
+  };
+
+  const handleToggleMcpDisabled = (server: McpServerRecord) => {
+    const key = mcpMetaKey(server);
+    setMcpMeta((current) => {
+      const existing = current[key];
+      const nextDisabled = !existing?.disabled;
+      return {
+        ...current,
+        [key]: {
+          key,
+          disabled: nextDisabled,
+          authMode: existing?.authMode ?? server.auth_mode,
+        },
+      };
+    });
+    setMcpServers((current) => current.map((item) => (
+      mcpMetaKey(item) === key
+        ? { ...item, status: item.status === "disabled" ? "unknown" : "disabled" }
+        : item
+    )));
+  };
+
+  const handleProbeMcpServer = async (server: McpServerRecord) => {
+    const key = mcpMetaKey(server);
+    setBusyMcpKey(key);
+    setMcpStatus(null);
+    try {
+      const refreshed = await invoke<McpServerRecord>("probe_mcp_server", {
+        name: server.name,
+        scope: server.scope,
+        workspacePath: server.workspace_path ?? null,
+      });
+      const meta = mcpMeta[key];
+      setMcpServers((current) => current.map((item) => (
+        mcpMetaKey(item) === key
+          ? applyMcpMeta([{ ...refreshed, auth_mode: meta?.authMode ?? refreshed.auth_mode }], mcpMeta)[0]
+          : item
+      )));
+    } catch (error) {
+      setMcpStatus({ tone: "error", message: errorMessage(error, `Could not probe ${server.name}.`) });
+    } finally {
+      setBusyMcpKey(null);
+    }
+  };
+
+  const handleRemoveMcpServer = async (server: McpServerRecord) => {
+    const key = mcpMetaKey(server);
+    setBusyMcpKey(key);
+    setMcpStatus(null);
+    try {
+      await invoke("remove_mcp_server", {
+        request: {
+          name: server.name,
+          scope: server.scope,
+          workspacePath: server.workspace_path ?? null,
+        },
+      });
+      setMcpMeta((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      await refreshMcpServers();
+      setMcpStatus({ tone: "success", message: `Removed ${server.name}.` });
+    } catch (error) {
+      setMcpStatus({ tone: "error", message: errorMessage(error, `Could not remove ${server.name}.`) });
+    } finally {
+      setBusyMcpKey(null);
+    }
+  };
+
+  const handleAuthenticateMcpServer = async (server: McpServerRecord) => {
+    const key = mcpMetaKey(server);
+    setBusyMcpKey(key);
+    setMcpStatus(null);
+    try {
+      const message = await invoke<string>("authenticate_mcp_server", {
+        name: server.name,
+        scope: server.scope,
+        workspacePath: server.workspace_path ?? null,
+      });
+      setMcpStatus({ tone: "success", message });
+      await refreshMcpServers();
+    } catch (error) {
+      setMcpStatus({ tone: "error", message: errorMessage(error, `Could not start auth for ${server.name}.`) });
+    } finally {
+      setBusyMcpKey(null);
+    }
+  };
+
+  const handleAddMcpServer = async () => {
+    const payload = {
+      name: addMcpForm.name.trim(),
+      scope: addMcpForm.scope,
+      workspacePath: addMcpForm.scope === "project" ? addMcpForm.workspacePath : null,
+      transport: addMcpForm.transport,
+      commandOrUrl: addMcpForm.commandOrUrl.trim(),
+      args: addMcpForm.argsText.split(/\s+/).map((item) => item.trim()).filter(Boolean),
+      env: addMcpForm.transport === "stdio" && addMcpForm.authMode === "env" && addMcpForm.secretName.trim() && addMcpForm.secretValue.trim()
+        ? [{ name: addMcpForm.secretName.trim(), value: addMcpForm.secretValue }]
+        : [],
+      headers: addMcpForm.transport !== "stdio" && addMcpForm.authMode === "bearer" && addMcpForm.headerName.trim() && addMcpForm.secretValue.trim()
+        ? [{
+            name: addMcpForm.headerName.trim(),
+            value: addMcpForm.headerValueType === "bearer"
+              ? `Bearer ${addMcpForm.secretValue.trim()}`
+              : addMcpForm.secretValue.trim(),
+          }]
+        : [],
+      clientId: addMcpForm.authMode === "oauth" ? addMcpForm.clientId.trim() || null : null,
+      clientSecret: addMcpForm.authMode === "oauth" ? addMcpForm.clientSecret.trim() || null : null,
+      callbackPort: addMcpForm.authMode === "oauth" && addMcpForm.callbackPort.trim()
+        ? Number(addMcpForm.callbackPort)
+        : null,
+      authMode: addMcpForm.authMode,
+    };
+
+    setBusyMcpKey("add");
+    setMcpStatus(null);
+    try {
+      const added = await invoke<McpServerRecord>("add_mcp_server", { request: payload });
+      const metaKey = mcpMetaKey(added);
+      setMcpMeta((current) => ({
+        ...current,
+        [metaKey]: {
+          key: metaKey,
+          disabled: false,
+          authMode: addMcpForm.authMode,
+        },
+      }));
+      setAddMcpOpen(false);
+      setAddMcpForm(createDefaultMcpForm(workspaces));
+      await refreshMcpServers();
+      setMcpStatus({ tone: "success", message: `Added ${added.name}.` });
+    } catch (error) {
+      setMcpStatus({ tone: "error", message: errorMessage(error, "Could not add the MCP server.") });
+    } finally {
+      setBusyMcpKey(null);
+    }
+  };
+
+  const handlePasteJsonMcpServer = async () => {
+    setBusyMcpKey("json");
+    setMcpStatus(null);
+    try {
+      const added = await invoke<McpServerRecord>("add_mcp_server_json", {
+        request: {
+          name: pasteJsonName.trim(),
+          scope: pasteJsonScope,
+          workspacePath: pasteJsonScope === "project" ? pasteJsonWorkspacePath : null,
+          json: pasteJsonValue,
+        },
+      });
+      setPasteJsonOpen(false);
+      setPasteJsonName("");
+      setPasteJsonValue("");
+      await refreshMcpServers();
+      setMcpStatus({ tone: "success", message: `Added ${added.name} from JSON.` });
+    } catch (error) {
+      setMcpStatus({ tone: "error", message: errorMessage(error, "Could not add the JSON-defined MCP server.") });
+    } finally {
+      setBusyMcpKey(null);
+    }
+  };
+
+  const handleImportMcpServers = async () => {
+    setBusyMcpKey("import");
+    setMcpStatus(null);
+    try {
+      await invoke("import_mcp_servers_from_claude_desktop");
+      await refreshMcpServers();
+      setMcpStatus({ tone: "success", message: "Imported MCP servers from Claude Desktop." });
+    } catch (error) {
+      setMcpStatus({ tone: "error", message: errorMessage(error, "Could not import MCP servers from Claude Desktop.") });
+    } finally {
+      setBusyMcpKey(null);
     }
   };
 
@@ -702,6 +1018,33 @@ export default function HomeView({
             onInstallSkillFolder={handleInstallSkillFolder}
             onInstallCatalogSkill={handleInstallCatalogSkill}
             onDeleteInstalledSkill={handleDeleteInstalledSkill}
+            workspaces={workspaces}
+            mcpServers={mcpServers}
+            loadingMcpServers={loadingMcpServers}
+            mcpStatus={mcpStatus}
+            busyMcpKey={busyMcpKey}
+            onRefreshMcpServers={refreshMcpServers}
+            onToggleMcpDisabled={handleToggleMcpDisabled}
+            onProbeMcpServer={handleProbeMcpServer}
+            onRemoveMcpServer={handleRemoveMcpServer}
+            onAuthenticateMcpServer={handleAuthenticateMcpServer}
+            addMcpOpen={addMcpOpen}
+            onAddMcpOpenChange={setAddMcpOpen}
+            addMcpForm={addMcpForm}
+            onAddMcpFormChange={setAddMcpForm}
+            onAddMcpServer={handleAddMcpServer}
+            pasteJsonOpen={pasteJsonOpen}
+            onPasteJsonOpenChange={setPasteJsonOpen}
+            pasteJsonName={pasteJsonName}
+            onPasteJsonNameChange={setPasteJsonName}
+            pasteJsonScope={pasteJsonScope}
+            onPasteJsonScopeChange={setPasteJsonScope}
+            pasteJsonWorkspacePath={pasteJsonWorkspacePath}
+            onPasteJsonWorkspacePathChange={setPasteJsonWorkspacePath}
+            pasteJsonValue={pasteJsonValue}
+            onPasteJsonValueChange={setPasteJsonValue}
+            onPasteJsonMcpServer={handlePasteJsonMcpServer}
+            onImportMcpServers={handleImportMcpServers}
           />
         ) : (
           <ScrollArea type="always" style={{ flex: 1 }}>
@@ -841,6 +1184,33 @@ function SettingsView({
   onInstallSkillFolder,
   onInstallCatalogSkill,
   onDeleteInstalledSkill,
+  workspaces,
+  mcpServers,
+  loadingMcpServers,
+  mcpStatus,
+  busyMcpKey,
+  onRefreshMcpServers,
+  onToggleMcpDisabled,
+  onProbeMcpServer,
+  onRemoveMcpServer,
+  onAuthenticateMcpServer,
+  addMcpOpen,
+  onAddMcpOpenChange,
+  addMcpForm,
+  onAddMcpFormChange,
+  onAddMcpServer,
+  pasteJsonOpen,
+  onPasteJsonOpenChange,
+  pasteJsonName,
+  onPasteJsonNameChange,
+  pasteJsonScope,
+  onPasteJsonScopeChange,
+  pasteJsonWorkspacePath,
+  onPasteJsonWorkspacePathChange,
+  pasteJsonValue,
+  onPasteJsonValueChange,
+  onPasteJsonMcpServer,
+  onImportMcpServers,
 }: {
   settingsTab: SettingsTab;
   onSettingsTabChange: (value: SettingsTab) => void;
@@ -862,6 +1232,33 @@ function SettingsView({
   onInstallSkillFolder: () => Promise<void>;
   onInstallCatalogSkill: (skillId: string, skillName: string) => Promise<void>;
   onDeleteInstalledSkill: (folderName: string, skillName: string) => Promise<void>;
+  workspaces: DiscoveredWorkspace[];
+  mcpServers: McpServerRecord[];
+  loadingMcpServers: boolean;
+  mcpStatus: McpStatusMessage | null;
+  busyMcpKey: string | null;
+  onRefreshMcpServers: () => Promise<void>;
+  onToggleMcpDisabled: (server: McpServerRecord) => void;
+  onProbeMcpServer: (server: McpServerRecord) => Promise<void>;
+  onRemoveMcpServer: (server: McpServerRecord) => Promise<void>;
+  onAuthenticateMcpServer: (server: McpServerRecord) => Promise<void>;
+  addMcpOpen: boolean;
+  onAddMcpOpenChange: (value: boolean) => void;
+  addMcpForm: AddMcpFormState;
+  onAddMcpFormChange: React.Dispatch<React.SetStateAction<AddMcpFormState>>;
+  onAddMcpServer: () => Promise<void>;
+  pasteJsonOpen: boolean;
+  onPasteJsonOpenChange: (value: boolean) => void;
+  pasteJsonName: string;
+  onPasteJsonNameChange: (value: string) => void;
+  pasteJsonScope: "local" | "user" | "project";
+  onPasteJsonScopeChange: (value: "local" | "user" | "project") => void;
+  pasteJsonWorkspacePath: string;
+  onPasteJsonWorkspacePathChange: (value: string) => void;
+  pasteJsonValue: string;
+  onPasteJsonValueChange: (value: string) => void;
+  onPasteJsonMcpServer: () => Promise<void>;
+  onImportMcpServers: () => Promise<void>;
 }) {
   const { builtinTools, mcpGroups } = splitToolsBySource(defaultToolState?.availableTools ?? [], defaultToolState?.mcpServers ?? []);
   const [expandedMcpGroups, setExpandedMcpGroups] = useState<Set<string>>(() => new Set());
@@ -940,6 +1337,9 @@ function SettingsView({
           </SettingsTabButton>
           <SettingsTabButton active={settingsTab === "skills"} onClick={() => onSettingsTabChange("skills")}>
             Skills
+          </SettingsTabButton>
+          <SettingsTabButton active={settingsTab === "mcp"} onClick={() => onSettingsTabChange("mcp")}>
+            MCP
           </SettingsTabButton>
           <SettingsTabButton active={settingsTab === "hooks"} onClick={() => onSettingsTabChange("hooks")}>
             Hooks
@@ -1238,12 +1638,546 @@ function SettingsView({
               </SectionCard>
             </Stack>
           ) : null}
+          {settingsTab === "mcp" ? (
+            <McpSettingsPanel
+              workspaces={workspaces}
+              servers={mcpServers}
+              loading={loadingMcpServers}
+              statusMessage={mcpStatus}
+              busyKey={busyMcpKey}
+              onRefresh={onRefreshMcpServers}
+              onToggleDisabled={onToggleMcpDisabled}
+              onProbe={onProbeMcpServer}
+              onRemove={onRemoveMcpServer}
+              onAuthenticate={onAuthenticateMcpServer}
+              addOpen={addMcpOpen}
+              onAddOpenChange={onAddMcpOpenChange}
+              addForm={addMcpForm}
+              onAddFormChange={onAddMcpFormChange}
+              onAddServer={onAddMcpServer}
+              pasteJsonOpen={pasteJsonOpen}
+              onPasteJsonOpenChange={onPasteJsonOpenChange}
+              pasteJsonName={pasteJsonName}
+              onPasteJsonNameChange={onPasteJsonNameChange}
+              pasteJsonScope={pasteJsonScope}
+              onPasteJsonScopeChange={onPasteJsonScopeChange}
+              pasteJsonWorkspacePath={pasteJsonWorkspacePath}
+              onPasteJsonWorkspacePathChange={onPasteJsonWorkspacePathChange}
+              pasteJsonValue={pasteJsonValue}
+              onPasteJsonValueChange={onPasteJsonValueChange}
+              onPasteJsonServer={onPasteJsonMcpServer}
+              onImport={onImportMcpServers}
+            />
+          ) : null}
           {settingsTab === "hooks" ? <EmptySettingsPanel label="Hooks" /> : null}
         </Box>
       </ScrollArea>
     </Box>
   );
 }
+
+function McpSettingsPanel({
+  workspaces,
+  servers,
+  loading,
+  statusMessage,
+  busyKey,
+  onRefresh,
+  onToggleDisabled,
+  onProbe,
+  onRemove,
+  onAuthenticate,
+  addOpen,
+  onAddOpenChange,
+  addForm,
+  onAddFormChange,
+  onAddServer,
+  pasteJsonOpen,
+  onPasteJsonOpenChange,
+  pasteJsonName,
+  onPasteJsonNameChange,
+  pasteJsonScope,
+  onPasteJsonScopeChange,
+  pasteJsonWorkspacePath,
+  onPasteJsonWorkspacePathChange,
+  pasteJsonValue,
+  onPasteJsonValueChange,
+  onPasteJsonServer,
+  onImport,
+}: {
+  workspaces: DiscoveredWorkspace[];
+  servers: McpServerRecord[];
+  loading: boolean;
+  statusMessage: McpStatusMessage | null;
+  busyKey: string | null;
+  onRefresh: () => Promise<void>;
+  onToggleDisabled: (server: McpServerRecord) => void;
+  onProbe: (server: McpServerRecord) => Promise<void>;
+  onRemove: (server: McpServerRecord) => Promise<void>;
+  onAuthenticate: (server: McpServerRecord) => Promise<void>;
+  addOpen: boolean;
+  onAddOpenChange: (value: boolean) => void;
+  addForm: AddMcpFormState;
+  onAddFormChange: React.Dispatch<React.SetStateAction<AddMcpFormState>>;
+  onAddServer: () => Promise<void>;
+  pasteJsonOpen: boolean;
+  onPasteJsonOpenChange: (value: boolean) => void;
+  pasteJsonName: string;
+  onPasteJsonNameChange: (value: string) => void;
+  pasteJsonScope: "local" | "user" | "project";
+  onPasteJsonScopeChange: (value: "local" | "user" | "project") => void;
+  pasteJsonWorkspacePath: string;
+  onPasteJsonWorkspacePathChange: (value: string) => void;
+  pasteJsonValue: string;
+  onPasteJsonValueChange: (value: string) => void;
+  onPasteJsonServer: () => Promise<void>;
+  onImport: () => Promise<void>;
+}) {
+  const summary = useMemo(() => ({
+    total: servers.length,
+    connected: servers.filter((server) => server.status === "connected").length,
+    needsAuth: servers.filter((server) => server.status === "needs-auth").length,
+    errors: servers.filter((server) => server.status === "error" || server.status === "invalid-config").length,
+  }), [servers]);
+
+  const canSubmitAdd = addForm.name.trim().length > 0
+    && addForm.commandOrUrl.trim().length > 0
+    && (addForm.scope !== "project" || addForm.workspacePath.trim().length > 0)
+    && (
+      addForm.authMode === "none"
+      || (addForm.authMode === "env" && addForm.secretName.trim().length > 0 && addForm.secretValue.trim().length > 0)
+      || (addForm.authMode === "bearer" && addForm.headerName.trim().length > 0 && addForm.secretValue.trim().length > 0)
+      || addForm.authMode === "oauth"
+    );
+
+  const canSubmitJson = pasteJsonName.trim().length > 0
+    && pasteJsonValue.trim().length > 0
+    && (pasteJsonScope !== "project" || pasteJsonWorkspacePath.trim().length > 0);
+
+  const workspaceOptions = workspaces.filter((workspace) => workspace.path_exists);
+
+  return (
+    <Box style={{ position: "relative" }}>
+      <Stack gap={16}>
+      {statusMessage ? (
+        <Box
+          style={{
+            padding: "10px 12px",
+            borderRadius: 12,
+            border: `1px solid ${statusMessage.tone === "success" ? "#28583b" : "#5a262c"}`,
+            background: statusMessage.tone === "success" ? "#102216" : "#261115",
+          }}
+        >
+          <Text size="sm" c={statusMessage.tone === "success" ? "#b7f7c7" : "#f6b7c0"}>{statusMessage.message}</Text>
+        </Box>
+      ) : null}
+      <SectionCard title="Overview" description="Configured Claude Code MCP servers across local, user, and discovered project scopes.">
+        <Box style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+          <McpSummaryStat label="Total" value={String(summary.total)} />
+          <McpSummaryStat label="Connected" value={String(summary.connected)} />
+          <McpSummaryStat label="Needs auth" value={String(summary.needsAuth)} />
+          <McpSummaryStat label="Errors" value={String(summary.errors)} />
+        </Box>
+      </SectionCard>
+      <SectionCard title="Actions" description="Add, import, or refresh MCP server definitions.">
+        <Group gap={8}>
+          <Button size="xs" onClick={() => onAddOpenChange(true)}>Add Server</Button>
+          <Button size="xs" variant="default" onClick={() => onPasteJsonOpenChange(true)}>Paste JSON</Button>
+          <Button size="xs" variant="default" onClick={() => void onImport()} loading={busyKey === "import"}>Import From Claude Desktop</Button>
+          <Button size="xs" variant="default" onClick={() => void onRefresh()} loading={loading}>Refresh Status</Button>
+        </Group>
+      </SectionCard>
+      <SectionCard title="Configured Servers" description="Each row shows the configured transport, scope, and latest health status.">
+        <Box style={{ position: "relative", minHeight: servers.length === 0 ? 68 : undefined }}>
+          {servers.length === 0 ? (
+            <Text size="sm" c={loading ? "#a1a1aa" : "#71717a"}>
+              {loading ? "Loading MCP servers…" : "No MCP servers are configured yet."}
+            </Text>
+          ) : (
+            <Stack gap={10}>
+              {servers.map((server) => {
+                const key = mcpMetaKey(server);
+                const isBusy = busyKey === key;
+                return (
+                  <Box key={key} style={{ border: "1px solid #23232a", borderRadius: 12, background: "#0d0d11", padding: 14 }}>
+                    <Group justify="space-between" align="flex-start" gap={12}>
+                      <Box style={{ minWidth: 0, flex: 1 }}>
+                        <Group gap={8} align="center">
+                          <Text size="sm" fw={600} c="#f4f4f5">{server.name}</Text>
+                          <McpStatusBadge status={server.status} />
+                        </Group>
+                        <Text size="xs" c="#8b8b96" mt={4}>
+                          {server.transport.toUpperCase()} · {server.scope}
+                          {server.scope === "project" && server.workspace_path ? ` · ${server.workspace_path}` : ""}
+                        </Text>
+                        <Text size="xs" c="#5f5f69" mt={6}>
+                          {server.url ?? server.command ?? "No command or URL available"}
+                        </Text>
+                        {server.args.length > 0 ? (
+                          <Text size="xs" c="#5f5f69" mt={4}>Args: {server.args.join(" ")}</Text>
+                        ) : null}
+                        {server.headers.length > 0 ? (
+                          <Text size="xs" c="#5f5f69" mt={4}>
+                            Headers: {server.headers.map((header) => `${header.name}=${header.value_preview}`).join(", ")}
+                          </Text>
+                        ) : null}
+                        {server.env.length > 0 ? (
+                          <Text size="xs" c="#5f5f69" mt={4}>
+                            Env: {server.env.map((envVar) => `${envVar.name}=${envVar.value_preview}`).join(", ")}
+                          </Text>
+                        ) : null}
+                        {server.last_error ? (
+                          <Text size="xs" c="#f6b7c0" mt={4}>{server.last_error}</Text>
+                        ) : null}
+                      </Box>
+                      {server.scope !== "cloud" ? (
+                        <Stack gap={8} align="stretch">
+                          <Button size="xs" variant="default" onClick={() => void onProbe(server)} loading={isBusy} disabled={server.status === "disabled"}>
+                            Retry
+                          </Button>
+                          {server.auth_mode === "oauth" || server.status === "needs-auth" ? (
+                            <Button size="xs" variant="default" onClick={() => void onAuthenticate(server)} loading={isBusy}>
+                              Authenticate
+                            </Button>
+                          ) : null}
+                          <Button size="xs" variant="default" onClick={() => onToggleDisabled(server)}>
+                            {server.status === "disabled" ? "Enable" : "Disable"}
+                          </Button>
+                          <Button size="xs" variant="default" color="red" onClick={() => void onRemove(server)} loading={isBusy}>
+                            Remove
+                          </Button>
+                        </Stack>
+                      ) : (
+                        <Text size="xs" c="#71717a" style={{ whiteSpace: "nowrap" }}>Managed by claude.ai</Text>
+                      )}
+                    </Group>
+                  </Box>
+                );
+              })}
+            </Stack>
+          )}
+        </Box>
+      </SectionCard>
+
+      <Modal opened={addOpen} onClose={() => onAddOpenChange(false)} title="Add MCP Server" centered>
+        <Stack gap={12}>
+          <TextInput
+            label="Name"
+            aria-label="MCP Name"
+            value={addForm.name}
+            onChange={(event) => onAddFormChange((current) => ({ ...current, name: event.currentTarget.value }))}
+          />
+          <Box>
+            <Text size="sm" c="#e4e4e7" mb={6}>Transport</Text>
+            <select
+              aria-label="MCP Transport"
+              value={addForm.transport}
+              onChange={(event) => onAddFormChange((current) => ({
+                ...current,
+                transport: event.target.value as AddMcpFormState["transport"],
+                authMode: event.target.value === "stdio" ? "env" : "none",
+              }))}
+              style={selectStyles}
+            >
+              <option value="http">Remote (HTTP)</option>
+              <option value="sse">Remote (SSE)</option>
+              <option value="stdio">Local (stdio)</option>
+            </select>
+          </Box>
+          <Box>
+            <Text size="sm" c="#e4e4e7" mb={6}>Scope</Text>
+            <select
+              aria-label="MCP Scope"
+              value={addForm.scope}
+              onChange={(event) => onAddFormChange((current) => ({ ...current, scope: event.target.value as AddMcpFormState["scope"] }))}
+              style={selectStyles}
+            >
+              <option value="local">Local</option>
+              <option value="user">User</option>
+              <option value="project">Project</option>
+            </select>
+          </Box>
+          {addForm.scope === "project" ? (
+            <Box>
+              <Text size="sm" c="#e4e4e7" mb={6}>Workspace</Text>
+              <select
+                aria-label="MCP Workspace"
+                value={addForm.workspacePath}
+                onChange={(event) => onAddFormChange((current) => ({ ...current, workspacePath: event.target.value }))}
+                style={selectStyles}
+              >
+                {workspaceOptions.map((workspace) => (
+                  <option key={workspace.encoded_name} value={workspace.decoded_path}>{workspace.display_name}</option>
+                ))}
+              </select>
+            </Box>
+          ) : null}
+          <TextInput
+            label={addForm.transport === "stdio" ? "Command" : "URL"}
+            aria-label={addForm.transport === "stdio" ? "MCP Command" : "MCP URL"}
+            value={addForm.commandOrUrl}
+            onChange={(event) => onAddFormChange((current) => ({ ...current, commandOrUrl: event.currentTarget.value }))}
+          />
+          <TextInput
+            label={addForm.transport === "stdio" ? "Arguments" : "Extra Args"}
+            aria-label="MCP Args"
+            description={addForm.transport === "stdio" ? "Space-separated process arguments." : "Usually left empty for remote servers."}
+            value={addForm.argsText}
+            onChange={(event) => onAddFormChange((current) => ({ ...current, argsText: event.currentTarget.value }))}
+          />
+          <Box>
+            <Text size="sm" c="#e4e4e7" mb={6}>Authentication mode</Text>
+            <select
+              aria-label="MCP Auth Mode"
+              value={addForm.authMode}
+              onChange={(event) => onAddFormChange((current) => ({ ...current, authMode: event.target.value as AddMcpFormState["authMode"] }))}
+              style={selectStyles}
+            >
+              {addForm.transport === "stdio" ? (
+                <>
+                  <option value="env">Inject secret as env var</option>
+                  <option value="none">No auth</option>
+                </>
+              ) : (
+                <>
+                  <option value="none">None</option>
+                  <option value="bearer">Bearer / API key</option>
+                  <option value="oauth">OAuth</option>
+                </>
+              )}
+            </select>
+          </Box>
+          {addForm.transport === "stdio" && addForm.authMode === "env" ? (
+            <>
+              <TextInput
+                label="Environment variable"
+                aria-label="MCP Env Name"
+                value={addForm.secretName}
+                onChange={(event) => onAddFormChange((current) => ({ ...current, secretName: event.currentTarget.value }))}
+              />
+              <TextInput
+                label="Secret value"
+                aria-label="MCP Secret Value"
+                value={addForm.secretValue}
+                onChange={(event) => onAddFormChange((current) => ({ ...current, secretValue: event.currentTarget.value }))}
+              />
+            </>
+          ) : null}
+          {addForm.transport !== "stdio" && addForm.authMode === "bearer" ? (
+            <>
+              <TextInput
+                label="Header name"
+                aria-label="MCP Header Name"
+                value={addForm.headerName}
+                onChange={(event) => onAddFormChange((current) => ({ ...current, headerName: event.currentTarget.value }))}
+              />
+              <Box>
+                <Text size="sm" c="#e4e4e7" mb={6}>Header value type</Text>
+                <select
+                  aria-label="MCP Header Value Type"
+                  value={addForm.headerValueType}
+                  onChange={(event) => onAddFormChange((current) => ({
+                    ...current,
+                    headerValueType: event.target.value as AddMcpFormState["headerValueType"],
+                  }))}
+                  style={selectStyles}
+                >
+                  <option value="bearer">Bearer token</option>
+                  <option value="raw">Raw value</option>
+                </select>
+              </Box>
+              <TextInput
+                label="Secret value"
+                aria-label="MCP Secret Value"
+                value={addForm.secretValue}
+                onChange={(event) => onAddFormChange((current) => ({ ...current, secretValue: event.currentTarget.value }))}
+              />
+            </>
+          ) : null}
+          {addForm.transport !== "stdio" && addForm.authMode === "oauth" ? (
+            <>
+              <TextInput
+                label="Client ID"
+                aria-label="MCP Client ID"
+                value={addForm.clientId}
+                onChange={(event) => onAddFormChange((current) => ({ ...current, clientId: event.currentTarget.value }))}
+              />
+              <TextInput
+                label="Client Secret"
+                aria-label="MCP Client Secret"
+                value={addForm.clientSecret}
+                onChange={(event) => onAddFormChange((current) => ({ ...current, clientSecret: event.currentTarget.value }))}
+              />
+              <TextInput
+                label="Callback Port"
+                aria-label="MCP Callback Port"
+                value={addForm.callbackPort}
+                onChange={(event) => onAddFormChange((current) => ({ ...current, callbackPort: event.currentTarget.value }))}
+              />
+              <Text size="xs" c="#71717a">
+                Claudy will hand off OAuth to Claude Code. If browser consent is required, Claudy can open the default browser as part of that flow.
+              </Text>
+            </>
+          ) : null}
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => onAddOpenChange(false)}>Cancel</Button>
+            <Button onClick={() => void onAddServer()} disabled={!canSubmitAdd} loading={busyKey === "add"}>
+              Save Server
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Modal opened={pasteJsonOpen} onClose={() => onPasteJsonOpenChange(false)} title="Paste MCP JSON" centered>
+        <Stack gap={12}>
+          <TextInput aria-label="MCP JSON Name" label="Name" value={pasteJsonName} onChange={(event) => onPasteJsonNameChange(event.currentTarget.value)} />
+          <Box>
+            <Text size="sm" c="#e4e4e7" mb={6}>Scope</Text>
+            <select
+              aria-label="MCP JSON Scope"
+              value={pasteJsonScope}
+              onChange={(event) => onPasteJsonScopeChange(event.target.value as "local" | "user" | "project")}
+              style={selectStyles}
+            >
+              <option value="local">Local</option>
+              <option value="user">User</option>
+              <option value="project">Project</option>
+            </select>
+          </Box>
+          {pasteJsonScope === "project" ? (
+            <Box>
+              <Text size="sm" c="#e4e4e7" mb={6}>Workspace</Text>
+              <select
+                aria-label="MCP JSON Workspace"
+                value={pasteJsonWorkspacePath}
+                onChange={(event) => onPasteJsonWorkspacePathChange(event.target.value)}
+                style={selectStyles}
+              >
+                {workspaceOptions.map((workspace) => (
+                  <option key={workspace.encoded_name} value={workspace.decoded_path}>{workspace.display_name}</option>
+                ))}
+              </select>
+            </Box>
+          ) : null}
+          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <Text size="sm" c="#e4e4e7">JSON</Text>
+            <textarea
+              aria-label="MCP JSON"
+              value={pasteJsonValue}
+              onChange={(event) => onPasteJsonValueChange(event.currentTarget.value)}
+              rows={10}
+              style={{
+                width: "100%",
+                borderRadius: 10,
+                border: "1px solid #2a2a32",
+                background: "#121217",
+                color: "#f4f4f5",
+                padding: 10,
+                fontFamily: "monospace",
+              }}
+            />
+          </label>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => onPasteJsonOpenChange(false)}>Cancel</Button>
+            <Button onClick={() => void onPasteJsonServer()} disabled={!canSubmitJson} loading={busyKey === "json"}>
+              Add From JSON
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+      </Stack>
+      {loading ? (
+        <Box
+          data-testid="mcp-loading-overlay"
+          aria-live="polite"
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(9, 9, 11, 0.75)",
+            backdropFilter: "blur(4px)",
+            borderRadius: 12,
+            zIndex: 20,
+          }}
+        >
+          <Box
+            style={{
+              padding: "14px 20px",
+              borderRadius: 14,
+              background: "rgba(24, 24, 27, 0.96)",
+              border: "1px solid #2a2a32",
+              boxShadow: "0 12px 30px rgba(0,0,0,0.45)",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+            }}
+          >
+            <Box
+              style={{
+                width: 16,
+                height: 16,
+                border: "2px solid #3f3f46",
+                borderTopColor: "#a1a1aa",
+                borderRadius: "50%",
+                animation: "spin 0.8s linear infinite",
+              }}
+            />
+            <Text size="sm" c="#f4f4f5">Loading MCP servers…</Text>
+          </Box>
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+function McpSummaryStat({ label, value }: { label: string; value: string }) {
+  return (
+    <Box style={{ borderRadius: 12, border: "1px solid #23232a", background: "#0d0d11", padding: 12 }}>
+      <Text size="xs" c="#71717a">{label}</Text>
+      <Text size="lg" fw={700} c="#f4f4f5" mt={4}>{value}</Text>
+    </Box>
+  );
+}
+
+function McpStatusBadge({ status }: { status: McpServerRecord["status"] }) {
+  const palette: Record<McpServerRecord["status"], { text: string; background: string; border: string; color: string }> = {
+    connected: { text: "Connected", background: "#102216", border: "#28583b", color: "#b7f7c7" },
+    connecting: { text: "Connecting", background: "#1a1b2b", border: "#2d3160", color: "#c6ceff" },
+    "needs-auth": { text: "Needs authentication", background: "#221b00", border: "#5c4700", color: "#fff4b5" },
+    "invalid-config": { text: "Invalid config", background: "#261115", border: "#5a262c", color: "#f6b7c0" },
+    error: { text: "Error", background: "#261115", border: "#5a262c", color: "#f6b7c0" },
+    disabled: { text: "Disabled", background: "#16161a", border: "#36363d", color: "#a1a1aa" },
+    unknown: { text: "Unknown", background: "#121217", border: "#2a2a32", color: "#d4d4d8" },
+  };
+  const item = palette[status];
+  return (
+    <Box
+      style={{
+        padding: "3px 8px",
+        borderRadius: 999,
+        border: `1px solid ${item.border}`,
+        background: item.background,
+      }}
+    >
+      <Text size="xs" c={item.color}>{item.text}</Text>
+    </Box>
+  );
+}
+
+const selectStyles: CSSProperties = {
+  width: "100%",
+  appearance: "none",
+  background: "#18181b",
+  border: "1px solid #27272a",
+  borderRadius: 10,
+  padding: "10px 12px",
+  fontSize: 13,
+  color: "#e4e4e7",
+  outline: "none",
+  fontFamily: "inherit",
+};
 
 function SettingsTabButton({
   active,
@@ -1952,7 +2886,7 @@ function NavButton({
         gap: 8,
         padding: "7px 12px",
         borderRadius: 0,
-        fontSize: 13,
+        fontSize: 14,
         fontWeight: active ? 500 : 400,
         color: active ? "#f0f0f2" : hovered ? "#a1a1aa" : "#71717a",
         transition: "background 180ms ease, color 180ms ease, border-color 180ms ease",

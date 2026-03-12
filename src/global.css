@@ -199,6 +199,12 @@ body,
   }
 }
 
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .splash-screen__logo-wrap,
   .splash-screen__logo,

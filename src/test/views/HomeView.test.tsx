@@ -23,6 +23,22 @@ let skillCatalogState: Array<{
   github_path: string;
   destination_name: string;
 }> = [];
+let mcpServersState: Array<{
+  name: string;
+  scope: "local" | "user" | "project";
+  transport: "stdio" | "sse" | "http";
+  status: "connected" | "connecting" | "needs-auth" | "invalid-config" | "error" | "disabled" | "unknown";
+  command?: string | null;
+  args: string[];
+  url?: string | null;
+  headers: Array<{ name: string; value_preview: string }>;
+  env: Array<{ name: string; value_preview: string }>;
+  auth_mode: "none" | "bearer" | "oauth" | "env";
+  has_secret: boolean;
+  workspace_path?: string | null;
+  last_error?: string | null;
+}> = [];
+type McpServerFixture = (typeof mcpServersState)[number];
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -96,7 +112,37 @@ describe("HomeView behavior", () => {
         destination_name: "repo-two-skill",
       },
     ];
-    invokeMock.mockImplementation((command: string) => {
+    mcpServersState = [
+      {
+        name: "github",
+        scope: "user",
+        transport: "http",
+        status: "connected",
+        url: "https://example.com/mcp",
+        args: [],
+        headers: [{ name: "Authorization", value_preview: "Bearer demo...ok" }],
+        env: [],
+        auth_mode: "bearer",
+        has_secret: true,
+        workspace_path: null,
+        last_error: null,
+      },
+      {
+        name: "local-tool",
+        scope: "project",
+        transport: "stdio",
+        status: "error",
+        command: "npx",
+        args: ["tool-server"],
+        headers: [],
+        env: [{ name: "API_KEY", value_preview: "demo...ok" }],
+        auth_mode: "env",
+        has_secret: true,
+        workspace_path: mockWorkspace.decoded_path,
+        last_error: "Failed to connect",
+      },
+    ];
+    invokeMock.mockImplementation((command: string, payload?: Record<string, unknown>) => {
       switch (command) {
         case "list_claude_installations":
           return Promise.resolve([
@@ -144,6 +190,78 @@ describe("HomeView behavior", () => {
         case "delete_installed_skill":
           installedSkillsState = installedSkillsState.filter((skill) => skill.folder_name !== "existing-skill");
           return Promise.resolve(null);
+        case "list_mcp_servers":
+          return Promise.resolve([...mcpServersState]);
+        case "probe_mcp_server":
+          return Promise.resolve((() => {
+            const server = mcpServersState.find((item) => item.name === payload?.name);
+            if (!server) return null;
+            return server.name === "local-tool"
+              ? { ...server, status: "connected", last_error: null }
+              : server;
+          })());
+        case "remove_mcp_server":
+          mcpServersState = mcpServersState.filter((server) => server.name !== "github");
+          return Promise.resolve(null);
+        case "add_mcp_server":
+          mcpServersState = [
+            ...mcpServersState,
+            {
+              name: "new-remote",
+              scope: "project",
+              transport: "http",
+              status: "unknown",
+              url: "https://new.example.com/mcp",
+              args: [],
+              headers: [],
+              env: [],
+              auth_mode: "oauth",
+              has_secret: false,
+              workspace_path: mockWorkspace.decoded_path,
+              last_error: null,
+            },
+          ];
+          return Promise.resolve(mcpServersState[mcpServersState.length - 1]);
+        case "add_mcp_server_json":
+          mcpServersState = [
+            ...mcpServersState,
+            {
+              name: "json-server",
+              scope: "local",
+              transport: "sse",
+              status: "unknown",
+              url: "https://json.example.com/sse",
+              args: [],
+              headers: [],
+              env: [],
+              auth_mode: "none",
+              has_secret: false,
+              workspace_path: null,
+              last_error: null,
+            },
+          ];
+          return Promise.resolve(mcpServersState[mcpServersState.length - 1]);
+        case "import_mcp_servers_from_claude_desktop":
+          mcpServersState = [
+            ...mcpServersState,
+            {
+              name: "desktop-import",
+              scope: "user",
+              transport: "http",
+              status: "unknown",
+              url: "https://desktop.example.com/mcp",
+              args: [],
+              headers: [],
+              env: [],
+              auth_mode: "none",
+              has_secret: false,
+              workspace_path: null,
+              last_error: null,
+            },
+          ];
+          return Promise.resolve(null);
+        case "authenticate_mcp_server":
+          return Promise.resolve("Claude Code needs to complete OAuth in the browser.");
         default:
           return Promise.resolve(null);
       }
@@ -327,5 +445,111 @@ describe("HomeView behavior", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Install" })[0]);
     await waitFor(() => expect(screen.getAllByText("catalog-skill").length).toBeGreaterThan(0));
     expect(screen.getAllByRole("button", { name: "Installed" }).length).toBeGreaterThan(0);
+  });
+
+  it("manages MCP servers from settings", async () => {
+    renderWithProviders(
+      <HomeView
+        workspaces={workspaces}
+        isLoading={false}
+        accountInfo={null}
+        onOpenWorkspace={() => {}}
+        onCreateSession={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "MCP" }));
+
+    await waitFor(() => expect(screen.getByText("Configured Servers")).toBeInTheDocument());
+    expect(screen.getByText("github")).toBeInTheDocument();
+    expect(screen.getByText("local-tool")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Disable" })[0]);
+    expect(screen.getByText("Disabled")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Retry" })[1]);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("probe_mcp_server", expect.any(Object)));
+
+    fireEvent.click(screen.getByRole("button", { name: "Add Server" }));
+    await waitFor(() => expect(screen.getByText("Add MCP Server")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("MCP Name"), { target: { value: "new-remote" } });
+    fireEvent.change(screen.getByLabelText("MCP Scope"), { target: { value: "project" } });
+    fireEvent.change(screen.getByLabelText("MCP Workspace"), { target: { value: mockWorkspace.decoded_path } });
+    fireEvent.change(screen.getByLabelText("MCP URL"), { target: { value: "https://new.example.com/mcp" } });
+    fireEvent.change(screen.getByLabelText("MCP Auth Mode"), { target: { value: "oauth" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Server" }));
+    await waitFor(() => expect(screen.getByText("Added new-remote.")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Paste JSON" }));
+    await waitFor(() => expect(screen.getByText("Paste MCP JSON")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("MCP JSON Name"), { target: { value: "json-server" } });
+    fireEvent.change(screen.getByLabelText("MCP JSON"), { target: { value: "{\"type\":\"sse\",\"url\":\"https://json.example.com/sse\"}" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add From JSON" }));
+    await waitFor(() => expect(screen.getByText("Added json-server from JSON.")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Import From Claude Desktop" }));
+    await waitFor(() => expect(screen.getByText("Imported MCP servers from Claude Desktop.")).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Authenticate" })[0]);
+    await waitFor(() => expect(screen.getByText("Claude Code needs to complete OAuth in the browser.")).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[0]);
+    await waitFor(() => expect(screen.queryByText("github")).not.toBeInTheDocument());
+  });
+
+  it("shows a non-blocking loading state while refreshing MCP servers", async () => {
+    let listCalls = 0;
+    let resolveRefresh: ((value: McpServerFixture[]) => void) | undefined;
+
+    invokeMock.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      switch (command) {
+        case "list_claude_installations":
+          return Promise.resolve([
+            {
+              label: "/usr/local/bin/claude",
+              path: "/usr/local/bin/claude",
+              is_available: true,
+              is_selected: true,
+            },
+          ]);
+        case "list_mcp_servers":
+          listCalls += 1;
+          if (listCalls === 1) {
+            return Promise.resolve([...mcpServersState]);
+          }
+          return new Promise<McpServerFixture[]>((resolve) => {
+            resolveRefresh = resolve;
+          });
+        case "probe_mcp_server": {
+          const server = mcpServersState.find((item) => item.name === payload?.name);
+          return Promise.resolve(server ?? null);
+        }
+        default:
+          return Promise.resolve(null);
+      }
+    });
+
+    renderWithProviders(
+      <HomeView
+        workspaces={workspaces}
+        isLoading={false}
+        accountInfo={null}
+        onOpenWorkspace={() => {}}
+        onCreateSession={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "MCP" }));
+
+    await waitFor(() => expect(screen.getByText("github")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Status" }));
+    await waitFor(() => expect(screen.getByTestId("mcp-loading-overlay")).toBeInTheDocument());
+    expect(screen.getByText("github")).toBeInTheDocument();
+
+    resolveRefresh?.([...mcpServersState]);
+    await waitFor(() => expect(screen.queryByTestId("mcp-loading-overlay")).not.toBeInTheDocument());
   });
 });
