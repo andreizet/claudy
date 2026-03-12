@@ -461,6 +461,7 @@ export default function App() {
     >
       {/* Scrollable tabs — hidden scrollbar, shrinks as needed */}
       <Box
+        data-tauri-drag-region
         style={{
           flex: 1,
           flexShrink: 0,
@@ -595,7 +596,7 @@ export default function App() {
       </Box>
       {!IS_MACOS && <>
         {/* Drag buffer — fills remaining space, grab here to move the window */}
-        <Box data-tauri-drag-region style={{ flex: 1, minWidth: 16, height: "100%" }} />
+        <Box data-tauri-drag-region style={{ flex: 1, minWidth: 16, maxWidth: 50, height: "100%" }} />
         <WindowControls />
       </>}
     </Box>
