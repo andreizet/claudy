@@ -2777,6 +2777,22 @@ fn start_interactive_command(
         .openpty(interactive_pty_size(140, 40))
         .map_err(|e| e.to_string())?;
 
+    // On Windows, .cmd files must be run via cmd.exe explicitly so that portable-pty's
+    // ConPTY can attach directly to cmd.exe. If we pass the .cmd path to CreateProcess
+    // directly, Windows internally spawns cmd.exe without the ConPTY handle, causing
+    // a new Windows Terminal window to appear.
+    #[cfg(windows)]
+    let mut cmd = if claude_bin.ends_with(".cmd") || claude_bin.ends_with(".CMD") {
+        let mut c = CommandBuilder::new("cmd.exe");
+        c.arg("/d");
+        c.arg("/s");
+        c.arg("/c");
+        c.arg(&claude_bin);
+        c
+    } else {
+        CommandBuilder::new(&claude_bin)
+    };
+    #[cfg(not(windows))]
     let mut cmd = CommandBuilder::new(&claude_bin);
     cmd.cwd(&cwd);
     cmd.env("PATH", &full_path);

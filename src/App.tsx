@@ -185,17 +185,29 @@ export default function App() {
     setTabs((prev) => {
       let changed = false;
       const next = prev.map((tab) => {
-        if (tab.id !== tabId || tab.kind !== "chat") {
-          return tab;
+        if (tab.kind !== "chat") return tab;
+        if (tab.id === tabId) {
+          changed = true;
+          return {
+            ...tab,
+            workspace,
+            selectedSessionId: workspace.sessions.some((session) => session.id === tab.selectedSessionId)
+              ? tab.selectedSessionId
+              : workspace.sessions[0]?.id ?? null,
+          };
         }
-        changed = true;
-        return {
-          ...tab,
-          workspace,
-          selectedSessionId: workspace.sessions.some((session) => session.id === tab.selectedSessionId)
-            ? tab.selectedSessionId
-            : workspace.sessions[0]?.id ?? null,
-        };
+        // For other tabs on the same workspace, propagate any new sessions so
+        // they appear in the sidebar without disrupting ongoing streaming state.
+        if (tab.workspace.encoded_name === workspace.encoded_name) {
+          const existingIds = new Set(tab.workspace.sessions.map((s) => s.id));
+          const incoming = workspace.sessions.filter((s) => !existingIds.has(s.id));
+          if (incoming.length === 0) return tab;
+          changed = true;
+          const merged = [...incoming, ...tab.workspace.sessions]
+            .sort((a, b) => b.modified_at.localeCompare(a.modified_at));
+          return { ...tab, workspace: { ...tab.workspace, sessions: merged } };
+        }
+        return tab;
       });
       return changed ? next : prev;
     });
@@ -347,11 +359,6 @@ export default function App() {
       return next;
     });
   };
-
-  const handleSessionTitleChange = useCallback((sessionTitle: string | null) => {
-    const currentActiveTabId = activeTabId;
-    updateTabSessionTitle(currentActiveTabId, sessionTitle);
-  }, [activeTabId, updateTabSessionTitle]);
 
   useEffect(() => {
     if (!showSplash) return;
@@ -507,43 +514,44 @@ export default function App() {
     </Box>
   );
 
-  if (activeTab.kind === "chat") {
-    return (
-      <Box style={{ height: "100vh", minHeight: 0 }}>
-        <ChatView
-          key={activeTab.id}
-          workspace={activeTab.workspace}
-          accountInfo={accountInfo}
-          mainHeader={tabHeader}
-          onSessionTitleChange={handleSessionTitleChange}
-          onWorkspaceChange={(workspace) => updateTabWorkspace(activeTab.id, workspace)}
-          selectedSessionId={activeTab.selectedSessionId}
-          onActiveSessionChange={(sessionId) => updateTabSelectedSession(activeTab.id, sessionId)}
-          onBack={() =>
-            setTabs((prev) =>
-              prev.map((t) =>
-                t.id === activeTab.id ? createHomeTab(activeTab.id) : t
-              )
-            )
-          }
-        />
-      </Box>
-    );
-  }
-
   return (
-    <Box style={{ height: "100vh", minHeight: 0 }}>
-      <HomeView
-        key={activeTab.id}
-        workspaces={workspaces}
-        isLoading={isLoading}
-        accountInfo={accountInfo}
-        mainHeader={tabHeader}
-        initialViewLabel={activeTab.viewLabel}
-        onViewLabelChange={(viewLabel) => updateHomeTabLabel(activeTab.id, viewLabel)}
-        onOpenWorkspace={replaceActiveTabWithWorkspace}
-        onCreateSession={(workspacePath) => void handleCreateSession(workspacePath, true)}
-      />
+    <Box style={{ height: "100vh", minHeight: 0, position: "relative" }}>
+      {tabs.map((tab) => {
+        if (tab.kind !== "chat") return null;
+        const isActive = tab.id === activeTabId && activeTab.kind === "chat";
+        return (
+          <Box
+            key={tab.id}
+            style={{ position: "absolute", inset: 0, display: isActive ? "flex" : "none", flexDirection: "column" }}
+          >
+            <ChatView
+              workspace={tab.workspace}
+              accountInfo={accountInfo}
+              mainHeader={tabHeader}
+              onSessionTitleChange={(title) => updateTabSessionTitle(tab.id, title)}
+              onWorkspaceChange={(workspace) => updateTabWorkspace(tab.id, workspace)}
+              selectedSessionId={tab.selectedSessionId}
+              onActiveSessionChange={(sessionId) => updateTabSelectedSession(tab.id, sessionId)}
+              onBack={() => setTabs((prev) => prev.map((t) => t.id === tab.id ? createHomeTab(tab.id) : t))}
+            />
+          </Box>
+        );
+      })}
+      {activeTab.kind === "home" && (
+        <Box style={{ position: "absolute", inset: 0 }}>
+          <HomeView
+            key={activeTab.id}
+            workspaces={workspaces}
+            isLoading={isLoading}
+            accountInfo={accountInfo}
+            mainHeader={tabHeader}
+            initialViewLabel={activeTab.viewLabel}
+            onViewLabelChange={(viewLabel) => updateHomeTabLabel(activeTab.id, viewLabel)}
+            onOpenWorkspace={replaceActiveTabWithWorkspace}
+            onCreateSession={(workspacePath) => void handleCreateSession(workspacePath, true)}
+          />
+        </Box>
+      )}
     </Box>
   );
 }

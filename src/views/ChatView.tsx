@@ -2150,8 +2150,8 @@ function SessionActivityIndicator({ activity }: { activity?: SessionActivityStat
       aria-label={activity ? `Session ${activity}` : undefined}
       title={activity === "generating" ? "Generating response" : activity === "completed" ? "Response completed" : undefined}
       style={{
-        width: 10,
-        height: 10,
+        width: 24,
+        height: 24,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -2159,8 +2159,10 @@ function SessionActivityIndicator({ activity }: { activity?: SessionActivityStat
         color: activity === "completed" ? "#4ade80" : "#FFE100",
       }}
     >
-      {activity === "generating" ? (
-        <Box style={{ marginLeft: 12 }}>
+      {activity === "completed" ? (
+        <Check size={10} strokeWidth={2.4} />
+      ) : (
+        <>
           <LoaderCircle size={10} strokeWidth={2} style={{ animation: "claudySessionSpin 1s linear infinite" }} />
           <style>{`
             @keyframes claudySessionSpin {
@@ -2168,10 +2170,8 @@ function SessionActivityIndicator({ activity }: { activity?: SessionActivityStat
               to { transform: rotate(360deg); }
             }
           `}</style>
-        </Box>
-      ) : activity === "completed" ? (
-        <Check size={10} strokeWidth={2.4} />
-      ) : null}
+        </>
+      )}
     </Box>
   );
 }
