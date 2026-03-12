@@ -332,7 +332,7 @@ describe("HomeView behavior", () => {
     await waitFor(() => expect(screen.getByText("Claude Installation")).toBeInTheDocument());
   });
 
-  it("uses folder picker result for New Session", async () => {
+  it("uses folder picker result for New Project", async () => {
     const onCreateSession = vi.fn();
     openMock.mockResolvedValue("/tmp/picked-folder");
 
@@ -346,7 +346,7 @@ describe("HomeView behavior", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "New Session" }));
+    fireEvent.click(screen.getByRole("button", { name: "New Project" }));
 
     await waitFor(() => expect(openMock).toHaveBeenCalledTimes(1));
     expect(onCreateSession).toHaveBeenCalledWith("/tmp/picked-folder");
