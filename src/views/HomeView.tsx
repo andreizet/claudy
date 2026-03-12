@@ -934,7 +934,7 @@ export default function HomeView({
                   },
                 }}
               >
-                New Session
+                New Project
               </Button>
             </Box>
           </Box>

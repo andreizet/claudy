@@ -426,12 +426,16 @@ export default function App() {
   }
 
   if (!hasProjectTabs) {
-    const standaloneHeader = (
+    let standaloneHeader = (
       <Box style={{ height: 47, background: "#0c0c0f", borderBottom: "1px solid #1f1f23", display: "flex", alignItems: "center", flexShrink: 0, userSelect: "none" }}>
         <Box data-tauri-drag-region style={{ flex: 1, height: "100%" }} />
-        {!IS_MACOS && <WindowControls />}
+        <WindowControls />
       </Box>
     );
+
+    if (IS_MACOS) {
+      standaloneHeader = (<div></div>);
+    }
     return (
       <Box style={{ height: "100vh", minHeight: 0 }}>
         <HomeView
