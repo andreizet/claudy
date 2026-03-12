@@ -2100,10 +2100,24 @@ fn get_workspace_favicon(workspace_path: String) -> Option<String> {
         }
     }
 
+    const SKIP_DIRS: &[&str] = &[
+        "node_modules", ".git", ".svn", "dist", "build", "out", "target",
+        "playwright", "cypress", "e2e", "__tests__", "test", "tests",
+        ".next", ".nuxt", ".cache", "coverage", "vendor",
+    ];
+
     for entry in walkdir::WalkDir::new(&workspace)
         .max_depth(3)
         .follow_links(false)
         .into_iter()
+        .filter_entry(|e| {
+            if e.file_type().is_dir() {
+                if let Some(name) = e.file_name().to_str() {
+                    return !SKIP_DIRS.contains(&name.to_lowercase().as_str());
+                }
+            }
+            true
+        })
         .flatten()
     {
         if !entry.file_type().is_file() {
