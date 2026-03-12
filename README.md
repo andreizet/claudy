@@ -19,6 +19,10 @@
 
 Claudy is a local-first desktop application that wraps [Claude Code](https://docs.anthropic.com/en/docs/claude-code) in a modern graphical interface. It lets you manage multiple projects, track sessions, monitor usage, and interact with Claude through a rich chat UI — all without leaving your desktop.
 
+<p align="center">
+  <img src="docs/printscreent.png" alt="Claudy project dashboard" width="1200" />
+</p>
+
 ## Features
 
 ### Multi-Project Workspace
