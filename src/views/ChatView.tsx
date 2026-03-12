@@ -19,6 +19,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import ReactMarkdown from "react-markdown";
@@ -264,6 +265,7 @@ export default function ChatView({
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
   const [slashCommands, setSlashCommands] = useState<SlashCommandOption[]>([]);
   const [selectedFileRefs, setSelectedFileRefs] = useState<string[]>([]);
+  const [selectedImages, setSelectedImages] = useState<{ name: string; path: string }[]>([]);
   const [autocompleteMode, setAutocompleteMode] = useState<"file" | "command" | null>(null);
   const [autocompleteQuery, setAutocompleteQuery] = useState("");
   const [autocompleteOpen, setAutocompleteOpen] = useState(false);
@@ -1195,6 +1197,29 @@ export default function ChatView({
     };
   }, [interactiveSessionId]);
 
+  // Listen for native drag-and-drop of image files
+  useEffect(() => {
+    const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"];
+    const unlisten = getCurrentWebviewWindow().onDragDropEvent(async (event) => {
+      if (event.payload.type !== "drop") return;
+      const paths = event.payload.paths.filter((p) =>
+        IMAGE_EXTENSIONS.some((ext) => p.toLowerCase().endsWith(ext))
+      );
+      for (const sourcePath of paths) {
+        try {
+          const saved = await invoke<{ name: string; path: string }>("save_temp_image", {
+            cwd: workspace.decoded_path,
+            sourcePath,
+          });
+          setSelectedImages((current) => [...current, saved]);
+        } catch (err) {
+          console.error("Failed to save dropped image:", err);
+        }
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [workspace.decoded_path]);
+
   useEffect(() => {
     if (!activeSuggestions.length) {
       setAutocompleteIndex(0);
@@ -1270,7 +1295,7 @@ export default function ChatView({
 
   const handleSend = () => {
     const text = input.trim();
-    if ((!text && selectedFileRefs.length === 0) || streaming || configuringSession || (!activeSession && !sessionToolState)) return;
+    if ((!text && selectedFileRefs.length === 0 && selectedImages.length === 0) || streaming || configuringSession || (!activeSession && !sessionToolState)) return;
     if (text.startsWith("/") && selectedFileRefs.length === 0) {
       const commandName = text.slice(1).trim().split(/\s+/, 1)[0] ?? "";
       const commandKind = slashCommandKindByName.get(commandName);
@@ -1293,11 +1318,16 @@ export default function ChatView({
       void startInteractiveOverlay(text);
       return;
     }
-    const message = selectedFileRefs.length
-      ? `${selectedFileRefs.map((file) => `@${file}`).join("\n")}${text ? `\n\n${text}` : ""}`
+    const allRefs = [
+      ...selectedFileRefs.map((file) => `@${file}`),
+      ...selectedImages.map((img) => `@${img.path}`),
+    ];
+    const message = allRefs.length
+      ? `${allRefs.join("\n")}${text ? `\n\n${text}` : ""}`
       : text;
     setInput("");
     setSelectedFileRefs([]);
+    setSelectedImages([]);
     setAutocompleteMode(null);
     setAutocompleteQuery("");
     setAutocompleteOpen(false);
@@ -1653,6 +1683,7 @@ export default function ChatView({
             pendingUserText={streaming ? pendingUserMessage : ""}
             sessionId={activeSession?.id}
             userAvatarUrl={userAvatarUrl}
+            workspacePath={workspace.decoded_path}
           />
         )}
 
@@ -1699,13 +1730,20 @@ export default function ChatView({
                   boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
                 }}
               >
-                {selectedFileRefs.length > 0 ? (
+                {(selectedFileRefs.length > 0 || selectedImages.length > 0) ? (
                   <Box style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
                     {selectedFileRefs.map((file) => (
                       <FileReferenceBadge
                         key={file}
                         file={file}
                         onRemove={() => setSelectedFileRefs((current) => current.filter((item) => item !== file))}
+                      />
+                    ))}
+                    {selectedImages.map((img) => (
+                      <FileReferenceBadge
+                        key={img.path}
+                        file={img.name}
+                        onRemove={() => setSelectedImages((current) => current.filter((item) => item.path !== img.path))}
                       />
                     ))}
                   </Box>
@@ -1882,12 +1920,12 @@ export default function ChatView({
                 <UnstyledButton
                   onClick={handleSend}
                   aria-label="Send message"
-                  disabled={loadingMessages || sessionSettingsOpen || configuringSession || (!input.trim() && selectedFileRefs.length === 0)}
+                  disabled={loadingMessages || sessionSettingsOpen || configuringSession || (!input.trim() && selectedFileRefs.length === 0 && selectedImages.length === 0)}
                   style={{
                     width: 36,
                     height: 36,
                     borderRadius: 8,
-                    background: loadingMessages || sessionSettingsOpen || configuringSession || (!input.trim() && selectedFileRefs.length === 0) ? "#27272a" : "#f4f4f5",
+                    background: loadingMessages || sessionSettingsOpen || configuringSession || (!input.trim() && selectedFileRefs.length === 0 && selectedImages.length === 0) ? "#27272a" : "#f4f4f5",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -1895,7 +1933,7 @@ export default function ChatView({
                     transition: "background 120ms",
                   }}
                 >
-                  <Send size={14} strokeWidth={2} style={{ color: input.trim() || selectedFileRefs.length > 0 ? "#0c0c0f" : "#52525b" }} />
+                  <Send size={14} strokeWidth={2} style={{ color: input.trim() || selectedFileRefs.length > 0 || selectedImages.length > 0 ? "#0c0c0f" : "#52525b" }} />
                 </UnstyledButton>
               )}
             </Box>

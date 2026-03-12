@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef, type CSSProperties } from "react"
 import { Box, Text, TextInput, Button, Group, Stack, ScrollArea, UnstyledButton, Skeleton, Switch, Tooltip, Modal } from "@mantine/core";
 import { BarChart3, ChevronDown, Cog, FolderKanban, Plus, Search, Star } from "lucide-react";
 import { ClaudeAccountInfo, DiscoveredWorkspace } from "../types";
-import sidebarTitle from "../assets/sidebar-title.svg";
+import sidebarTitle from "../assets/logo.svg";
 import { md5 } from "../shared/md5";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
@@ -816,7 +816,7 @@ export default function HomeView({
               style={{
                 display: "block",
                 width: "100%",
-                maxWidth: 150,
+                maxWidth: 130,
                 height: "auto",
                 minWidth: 0,
               }}

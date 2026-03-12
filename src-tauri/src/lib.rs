@@ -3159,6 +3159,63 @@ fn send_new_message(
 }
 
 #[tauri::command]
+fn save_temp_image(cwd: String, source_path: String) -> Result<SavedImage, String> {
+    let source = PathBuf::from(&source_path);
+    let file_name_orig = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("image.png");
+
+    let images_dir = PathBuf::from(&cwd).join(".claudy-images");
+    fs::create_dir_all(&images_dir).map_err(|e| format!("Failed to create .claudy-images dir: {}", e))?;
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let safe_name = file_name_orig.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+    let dest_name = format!("{}_{}", ts, safe_name);
+    let dest_path = images_dir.join(&dest_name);
+
+    fs::copy(&source, &dest_path).map_err(|e| format!("Failed to copy image: {}", e))?;
+
+    Ok(SavedImage {
+        name: file_name_orig.to_string(),
+        path: format!(".claudy-images/{}", dest_name),
+    })
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct SavedImage {
+    name: String,
+    path: String,
+}
+
+#[tauri::command]
+fn read_image_data_url(cwd: String, relative_path: String) -> Result<String, String> {
+    let full_path = PathBuf::from(&cwd).join(&relative_path);
+    let bytes = fs::read(&full_path).map_err(|e| format!("Failed to read image: {}", e))?;
+
+    let ext = full_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png")
+        .to_lowercase();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        _ => "image/png",
+    };
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{};base64,{}", mime, b64))
+}
+
+#[tauri::command]
 async fn list_mcp_servers(workspace_paths: Vec<String>) -> Result<Vec<McpServerRecord>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut records = global_mcp_servers()?;
@@ -3392,7 +3449,9 @@ pub fn run() {
             close_interactive_command,
             send_new_message,
             send_message,
-            stop_message
+            stop_message,
+            save_temp_image,
+            read_image_data_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running Claudy");

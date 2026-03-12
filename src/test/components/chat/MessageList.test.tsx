@@ -16,6 +16,10 @@ vi.mock("@mantine/notifications", () => ({
   },
 }));
 
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(""),
+}));
+
 function makeMessages(count: number): JsonlRecord[] {
   return Array.from({ length: count }).map((_, index) => ({
     type: index % 2 === 0 ? "user" : "assistant",

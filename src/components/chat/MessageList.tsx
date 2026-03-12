@@ -1,6 +1,7 @@
 import { ComponentPropsWithoutRef, MouseEvent, ReactNode, forwardRef, memo, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
+import { invoke } from "@tauri-apps/api/core";
 import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import {
   ChevronDown,
@@ -61,6 +62,7 @@ interface Props {
   pendingUserText?: string;
   sessionId?: string | null;
   userAvatarUrl?: string;
+  workspacePath?: string;
 }
 
 type MessageListItem =
@@ -94,7 +96,7 @@ const VirtuosoList = forwardRef<HTMLDivElement, ComponentPropsWithoutRef<"div">>
   );
 });
 
-function MessageList({ messages, streamMessages, streamBlocks, showGenerating, pendingUserText, sessionId, userAvatarUrl }: Props) {
+function MessageList({ messages, streamMessages, streamBlocks, showGenerating, pendingUserText, sessionId, userAvatarUrl, workspacePath }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
   const scrollRef = useRef<HTMLElement | null>(null);
   const atBottomRef = useRef(true);
@@ -263,10 +265,10 @@ function MessageList({ messages, streamMessages, streamBlocks, showGenerating, p
         }}
         itemContent={(_, item) => {
           if (item.kind === "message" || item.kind === "stream-message") {
-            return <MessageItem record={item.record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} />;
+            return <MessageItem record={item.record} toolResults={toolResults} userAvatarUrl={userAvatarUrl} workspacePath={workspacePath} />;
           }
           if (item.kind === "pending-user") {
-            return <UserBubble text={item.text} avatarUrl={userAvatarUrl} />;
+            return <UserBubble text={item.text} avatarUrl={userAvatarUrl} workspacePath={workspacePath} />;
           }
           return <StreamingItem blocks={item.blocks} />;
         }}
@@ -389,10 +391,12 @@ function MessageItem({
   record,
   toolResults,
   userAvatarUrl,
+  workspacePath,
 }: {
   record: JsonlRecord;
   toolResults: Map<string, { content: string; isError: boolean }>;
   userAvatarUrl?: string;
+  workspacePath?: string;
 }) {
   if (record.type === "summary") {
     return <SummaryDivider />;
@@ -408,7 +412,7 @@ function MessageItem({
   if (isUser) {
     const text = typeof content === "string" ? content : extractUserText(content);
     if (!text.trim()) return null;
-    return <UserBubble text={text} avatarUrl={userAvatarUrl} />;
+    return <UserBubble text={text} avatarUrl={userAvatarUrl} workspacePath={workspacePath} />;
   }
 
   // Assistant message — render each content block
@@ -423,6 +427,81 @@ function MessageItem({
   );
 }
 
+// ── Image components ──────────────────────────────────────────────────────────
+
+function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
+  return (
+    <Box
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 1000,
+        background: "rgba(0, 0, 0, 0.85)",
+        backdropFilter: "blur(8px)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "zoom-out",
+      }}
+    >
+      <Box
+        component="img"
+        src={src}
+        alt="Enlarged image"
+        style={{
+          maxWidth: "90vw",
+          maxHeight: "90vh",
+          objectFit: "contain",
+          borderRadius: 8,
+          boxShadow: "0 8px 40px rgba(0,0,0,0.6)",
+        }}
+      />
+    </Box>
+  );
+}
+
+function ImageThumb({ relativePath, workspacePath }: { relativePath: string; workspacePath: string }) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    invoke<string>("read_image_data_url", { cwd: workspacePath, relativePath })
+      .then((url) => { if (!cancelled) setDataUrl(url); })
+      .catch((err) => console.error("Failed to load image thumb:", err));
+    return () => { cancelled = true; };
+  }, [relativePath, workspacePath]);
+
+  if (!dataUrl) {
+    return (
+      <Box style={{ width: 80, height: 80, borderRadius: 8, background: "#27272a", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <Text size="xs" c="#71717a">...</Text>
+      </Box>
+    );
+  }
+
+  return (
+    <>
+      <Box
+        component="img"
+        src={dataUrl}
+        alt={relativePath.split("/").pop() ?? "image"}
+        onClick={() => setLightboxOpen(true)}
+        style={{
+          width: 80,
+          height: 80,
+          objectFit: "cover",
+          borderRadius: 8,
+          border: "1px solid #3f3f46",
+          cursor: "zoom-in",
+        }}
+      />
+      {lightboxOpen ? <ImageLightbox src={dataUrl} onClose={() => setLightboxOpen(false)} /> : null}
+    </>
+  );
+}
+
 // ── User bubble ───────────────────────────────────────────────────────────────
 
 function extractTag(text: string, tag: string): string | null {
@@ -430,7 +509,7 @@ function extractTag(text: string, tag: string): string | null {
   return m ? m[1].trim() : null;
 }
 
-function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
+function UserBubble({ text, avatarUrl, workspacePath }: { text: string; avatarUrl?: string; workspacePath?: string }) {
   // hide caveat messages
   if (extractTag(text, "local-command-caveat") !== null) return null;
   if (isExpandedSkillPrompt(text)) return null;
@@ -480,7 +559,8 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
     );
   }
 
-  const { fileRefs, body } = extractUserBubbleContent(text);
+  const { fileRefs, imageRefs, body } = extractUserBubbleContent(text);
+  const hasAttachments = fileRefs.length > 0 || imageRefs.length > 0;
 
   return (
     <Box style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-end", gap: 8, paddingBottom: 16 }}>
@@ -496,6 +576,13 @@ function UserBubble({ text, avatarUrl }: { text: string; avatarUrl?: string }) {
           lineHeight: 1.6,
         }}
       >
+        {imageRefs.length > 0 && workspacePath ? (
+          <Box style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: (body || fileRefs.length > 0) ? 10 : 0 }}>
+            {imageRefs.map((img) => (
+              <ImageThumb key={img} relativePath={img} workspacePath={workspacePath} />
+            ))}
+          </Box>
+        ) : null}
         {fileRefs.length > 0 ? (
           <Box style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: body ? 10 : 0 }}>
             {fileRefs.map((file) => (
@@ -1315,9 +1402,17 @@ function extractUserText(content: ContentBlock[]): string {
     .join("\n");
 }
 
-function extractUserBubbleContent(text: string): { fileRefs: string[]; body: string } {
+const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"];
+
+function isImageRef(ref: string): boolean {
+  const lower = ref.toLowerCase();
+  return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+function extractUserBubbleContent(text: string): { fileRefs: string[]; imageRefs: string[]; body: string } {
   const lines = text.split("\n");
   const fileRefs: string[] = [];
+  const imageRefs: string[] = [];
   let index = 0;
 
   while (index < lines.length) {
@@ -1325,7 +1420,11 @@ function extractUserBubbleContent(text: string): { fileRefs: string[]; body: str
     if (!line.startsWith("@")) break;
     const file = line.slice(1).trim();
     if (!file) break;
-    fileRefs.push(file);
+    if (isImageRef(file)) {
+      imageRefs.push(file);
+    } else {
+      fileRefs.push(file);
+    }
     index += 1;
   }
 
@@ -1335,6 +1434,7 @@ function extractUserBubbleContent(text: string): { fileRefs: string[]; body: str
 
   return {
     fileRefs,
+    imageRefs,
     body: lines.slice(index).join("\n"),
   };
 }

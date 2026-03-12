@@ -15,6 +15,12 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: (...args: unknown[]) => listenMock(...args),
 }));
 
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({
+    onDragDropEvent: () => Promise.resolve(() => {}),
+  }),
+}));
+
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     loadAddon() {}
