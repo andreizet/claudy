@@ -133,7 +133,7 @@ describe("MessageList behavior", () => {
     });
   });
 
-  it("shows a collapsed thinking card only for the active stream and expands on click", async () => {
+  it("starts thinking collapsed for the active stream and lets you expand it", () => {
     renderMessageList(
       <MessageList
         messages={[]}
@@ -152,7 +152,36 @@ describe("MessageList behavior", () => {
 
     fireEvent.click(screen.getByText("Thinking"));
 
-    expect(await screen.findByText("Inspecting files")).toBeInTheDocument();
+    expect(screen.getByText("Inspecting files")).toBeInTheDocument();
+  });
+
+  it("renders collapsed thinking blocks for completed assistant messages and lets you reopen them", () => {
+    renderMessageList(
+      <MessageList
+        sessionId="session-complete-thinking"
+        messages={[
+          {
+            type: "assistant",
+            timestamp: "2026-03-10T08:02:00Z",
+            message: {
+              role: "assistant",
+              content: [
+                { type: "thinking", thinking: "Inspecting files" },
+                { type: "text", text: "Done" },
+              ],
+            },
+          },
+        ]}
+      />
+    );
+    setupViewport();
+
+    expect(screen.getByText("Thinking")).toBeInTheDocument();
+    expect(screen.queryByText("Inspecting files")).not.toBeInTheDocument();
+    expect(screen.getByText("Done")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Thinking"));
+    expect(screen.getByText("Inspecting files")).toBeInTheDocument();
   });
 
   it("renders leading file references in user messages as badges without remove controls", () => {

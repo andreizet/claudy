@@ -300,7 +300,7 @@ function shouldRenderRecord(record: JsonlRecord): boolean {
     ? [{ type: "text" as const, text: record.message.content }]
     : record.message.content;
 
-  return blocks.some((block) => block.type === "text" || block.type === "tool_use");
+  return blocks.some((block) => block.type === "text" || block.type === "tool_use" || block.type === "thinking");
 }
 
 function shouldRenderUserText(text: string): boolean {
@@ -332,7 +332,6 @@ function StreamingItem({ blocks }: { blocks: ContentBlock[] }) {
           record={record}
           isLast={index === blocks.length - 1}
           toolResults={new Map()}
-          showThinking
         />
       ))}
       <GeneratingIndicator />
@@ -633,13 +632,11 @@ function AssistantBlock({
   record,
   isLast,
   toolResults,
-  showThinking = false,
 }: {
   block: ContentBlock;
   record: JsonlRecord;
   isLast: boolean;
   toolResults: Map<string, { content: string; isError: boolean }>;
-  showThinking?: boolean;
 }) {
   if (block.type === "text") {
     if (!block.text.trim()) return null;
@@ -659,7 +656,6 @@ function AssistantBlock({
   }
 
   if (block.type === "thinking") {
-    if (!showThinking || !block.thinking.trim()) return null;
     return <ThinkingCard thinking={block.thinking} />;
   }
 
@@ -678,8 +674,8 @@ function ThinkingCard({ thinking }: { thinking: string }) {
         maxWidth: "88%",
         overflow: "hidden",
       }}
-    >
-      <Box
+      >
+        <Box
         onClick={() => setExpanded((current) => !current)}
         style={{
           display: "flex",
@@ -726,6 +722,7 @@ function AssistantText({ text }: { text: string }) {
           pre: ({ children }) => (
             <Box
               component="pre"
+              className="chat-h-scroll"
               style={{
                 background: "#18181b",
                 border: "1px solid #27272a",
@@ -907,6 +904,7 @@ function ToolCard({ block, result }: { block: ContentBlockToolUse; result?: { co
                 >
                   <Box
                     component="pre"
+                    className="chat-h-scroll"
                     style={{
                       margin: 0,
                       padding: "10px 14px",
@@ -1014,6 +1012,7 @@ function DiffView({ oldStr, newStr }: { oldStr: string; newStr: string }) {
   return (
     <Box
       component="pre"
+      className="chat-h-scroll"
       style={{
         margin: 0,
         padding: "10px 0",
@@ -1165,7 +1164,7 @@ function CopyButton({
         marginBottom: compact ? undefined : 8,
         position: "absolute",
         top: 8,
-        right: 8,
+        right: -30,
         zIndex: 1,
       }}
     >

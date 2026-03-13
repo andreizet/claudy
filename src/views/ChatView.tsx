@@ -151,10 +151,6 @@ function removeStreamBlock(blocks: ContentBlock[], index: number): ContentBlock[
   return next;
 }
 
-function stripThinkingBlocks(blocks: ContentBlock[]): ContentBlock[] {
-  return blocks.filter((block) => block.type !== "thinking");
-}
-
 function updateStreamToolInputDelta(blocks: ContentBlock[], index: number, partialJson: string): ContentBlock[] {
   const next = blocks.slice();
   const block = next[index];
@@ -972,7 +968,7 @@ export default function ChatView({
               type: "assistant",
               message: {
                 role: "assistant",
-                content: stripThinkingBlocks(streamBlocksRef.current),
+                content: streamBlocksRef.current,
               },
               timestamp: new Date().toISOString(),
             };
@@ -1021,19 +1017,10 @@ export default function ChatView({
           setStreamBlocks((current) => updateStreamToolInputDelta(current, rec.event?.index ?? 0, rec.event.delta.partial_json));
           return;
         }
-        if (
-          rec.type === "stream_event"
-          && rec.event?.type === "content_block_stop"
-          && typeof rec.event?.index === "number"
-          && streamBlocksRef.current[rec.event.index]?.type === "thinking"
-        ) {
-          setStreamBlocks((current) => removeStreamBlock(current, rec.event.index));
-          return;
-        }
         if (rec.type === "assistant") {
           const content = rec.message?.content;
           const blocks = Array.isArray(content)
-            ? stripThinkingBlocks(content as ContentBlock[])
+            ? content as ContentBlock[]
             : typeof content === "string"
               ? [{ type: "text" as const, text: content }]
               : [];

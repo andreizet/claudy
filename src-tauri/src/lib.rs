@@ -17,15 +17,21 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Creates a `std::process::Command` that hides the console window on Windows.
+#[cfg(windows)]
 fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     let mut cmd = std::process::Command::new(program);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    cmd.creation_flags(CREATE_NO_WINDOW);
     cmd
+}
+
+/// Creates a `std::process::Command`.
+#[cfg(not(windows))]
+fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
+    std::process::Command::new(program)
 }
 
 // ─── Data types ───────────────────────────────────────────────────────────────

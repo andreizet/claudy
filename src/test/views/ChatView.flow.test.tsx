@@ -50,7 +50,7 @@ vi.mock("../../components/chat/MessageList", () => ({
     streamBlocks,
   }: {
     messages: Array<{ message?: { content?: string } }>;
-    streamMessages?: Array<{ message?: { content?: Array<{ type: string; text?: string; name?: string }> } }>;
+    streamMessages?: Array<{ message?: { content?: Array<{ type: string; text?: string; name?: string; thinking?: string }> } }>;
     pendingUserText?: string;
     showGenerating?: boolean;
     streamBlocks?: Array<{ type: string; text?: string; name?: string; thinking?: string }>;
@@ -58,6 +58,11 @@ vi.mock("../../components/chat/MessageList", () => ({
     <div data-testid="message-list">
       <div>message-count:{messages.length}</div>
       <div>stream-message-count:{(streamMessages ?? []).length}</div>
+      <div>stream-messages:{(streamMessages ?? []).flatMap((message) => (message.message?.content ?? [])).map((block) => {
+        if (block.type === "text") return block.text ?? "";
+        if (block.type === "thinking") return `thinking:${block.thinking ?? ""}`;
+        return `${block.type}:${block.name ?? ""}`;
+      }).join("|")}</div>
       <div>pending-user:{pendingUserText ?? ""}</div>
       <div>show-generating:{String(!!showGenerating)}</div>
       <div>stream-blocks:{(streamBlocks ?? []).map((block) => {
@@ -659,7 +664,7 @@ describe("ChatView core message flow", () => {
     expect(await screen.findByText("stream-blocks:tool_use:Bash")).toBeInTheDocument();
   });
 
-  it("shows thinking only while the current block is active", async () => {
+  it("keeps thinking visible after the current block completes", async () => {
     const listeners = new Map<string, (payload: { payload: string }) => void>();
     listenMock.mockImplementation((event: string, callback: (payload: { payload: string }) => void) => {
       listeners.set(event, callback);
@@ -716,6 +721,21 @@ describe("ChatView core message flow", () => {
     });
 
     await waitFor(() => {
+      expect(screen.getByText("stream-blocks:thinking:Inspecting context")).toBeInTheDocument();
+    });
+
+    listeners.get("claude-stream")?.({
+      payload: JSON.stringify({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+        },
+      }),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("stream-message-count:1")).toBeInTheDocument();
+      expect(screen.getByText("stream-messages:thinking:Inspecting context")).toBeInTheDocument();
       expect(screen.getByText("stream-blocks:")).toBeInTheDocument();
     });
   });
