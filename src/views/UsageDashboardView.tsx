@@ -373,7 +373,7 @@ function DataTable({ headers, rows }: { headers: string[]; rows: string[][] }) {
         highlightOnHover={false}
         styles={{
           tr: { borderBottom: "1px solid #23232a" },
-          th: { color: "#71717a", fontSize: 11, fontWeight: 700, textTransform: "uppercase", padding: "8px 10px" },
+          th: { color: "#71717a", fontSize: 10, fontWeight: 700, textTransform: "uppercase", padding: "6px 10px" },
           td: { color: "#e4e4e7", fontSize: 12, padding: "10px" },
         }}
       >
@@ -430,14 +430,18 @@ function SortableTable<TSortKey extends string>({
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: 6,
+                    gap: 5,
                     color: sort.key === column.key ? "#e4e4e7" : "#71717a",
+                    fontSize: 10,
+                    fontWeight: 700,
+                    lineHeight: 1,
+                    textTransform: "uppercase",
                   }}
                 >
-                  <Text size="11px" fw={700} tt="uppercase" inherit>
+                  <Text span size="10px" fw={700} tt="uppercase" style={{ lineHeight: 1 }}>
                     {column.label}
                   </Text>
-                  <Text size="10px" c={sort.key === column.key ? "#FFE100" : "#52525b"} lh={1}>
+                  <Text span size="9px" c={sort.key === column.key ? "#FFE100" : "#52525b"} lh={1}>
                     {sort.key === column.key ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}
                   </Text>
                 </UnstyledButton>

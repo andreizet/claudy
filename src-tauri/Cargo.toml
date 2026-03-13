@@ -1,6 +1,6 @@
 [package]
 name = "claudy"
-version = "0.3.6"
+version = "0.3.7"
 description = "Claudy — Claude Code Desktop IDE"
 authors = []
 edition = "2021"
