@@ -14,6 +14,20 @@ use base64::Engine;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Creates a `std::process::Command` that hides the console window on Windows.
+fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 // ─── Data types ───────────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -689,7 +703,7 @@ fn command_cwd_for_scope(scope: &str, workspace_path: Option<&str>) -> Result<Pa
 
 fn run_claude_command_capture(args: &[String], cwd: Option<&Path>) -> Result<String, String> {
     let (claude_bin, full_path) = claude_binary_and_path();
-    let mut cmd = std::process::Command::new(&claude_bin);
+    let mut cmd = hidden_command(&claude_bin);
     cmd.args(args);
     cmd.env("PATH", full_path);
     if let Some(cwd) = cwd {
@@ -1692,7 +1706,7 @@ fn fetch_plan_usage(workspace_path: String, session_id: Option<String>) -> Resul
     }
 
     let (claude_bin, full_path) = claude_binary_and_path();
-    let mut cmd = std::process::Command::new(&claude_bin);
+    let mut cmd = hidden_command(&claude_bin);
     cmd.current_dir(&cwd);
     cmd.env("PATH", &full_path);
     cmd.arg("--output-format").arg("json");
@@ -1767,7 +1781,7 @@ fn run_claude_session_init_probe(
     cwd: &Path,
     use_no_session_persistence: bool,
 ) -> Result<std::process::Output, String> {
-    let mut cmd = std::process::Command::new(claude_bin);
+    let mut cmd = hidden_command(claude_bin);
     cmd.current_dir(cwd);
     cmd.env("PATH", full_path);
     cmd.arg("-p")
@@ -2345,7 +2359,7 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
 }
 
 fn run_command(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
-    let mut cmd = std::process::Command::new(program);
+    let mut cmd = hidden_command(program);
     cmd.args(args);
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
@@ -3034,7 +3048,7 @@ fn spawn_claude_message(
             },
         );
 
-        let mut cmd = std::process::Command::new(&claude_bin);
+        let mut cmd = hidden_command(&claude_bin);
         cmd.arg("-p").arg(&message)
            .arg("--output-format").arg("stream-json")
            .arg("--verbose")
@@ -3290,7 +3304,7 @@ async fn add_mcp_server(request: AddMcpServerRequest) -> Result<McpServerRecord,
     if let Some(client_secret) = request.client_secret.as_ref().filter(|value| !value.trim().is_empty()) {
         let env_name = "MCP_CLIENT_SECRET";
         let (claude_bin, full_path) = claude_binary_and_path();
-        let mut cmd = std::process::Command::new(&claude_bin);
+        let mut cmd = hidden_command(&claude_bin);
         cmd.args(&args);
         cmd.env("PATH", full_path);
         cmd.env(env_name, client_secret);
